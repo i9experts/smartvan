@@ -1,0 +1,15 @@
+name: Deploy SmartVan NestJS
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 72.61.119.165
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: /var/www/smartvan/deploy.sh
