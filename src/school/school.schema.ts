@@ -94,6 +94,9 @@ export class School {
   contactNumber: string;
 
 
+  @Prop({ default: 'Asia/Karachi' })
+  timezone: string;
+
   @Prop({ default: 'active' })
   status: string;
 

@@ -221,11 +221,11 @@ async getAssignedTripByDriver(driverId: string) {
   // ✅ Step 4: Today info (Pakistan timezone)
   const today = new Date().toLocaleString('en-US', {
     weekday: 'long',
-    timeZone: 'Asia/Karachi',
+    timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Karachi',
   }).toLowerCase();
 
   const todayDate = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'Asia/Karachi',
+    timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Karachi',
   }); // e.g. 2025-11-14
 
   // ✅ Step 5: Active routes for today
@@ -270,7 +270,7 @@ async getAssignedTripByDriver(driverId: string) {
       scheduleDate: todayDate,
       routeId: route._id,
       tripStatus: existingTrip?.status || "start",
-      TripStarted: existingTrip ? true: true,
+      TripStarted: !!existingTrip,
       routeTitle: route.title,
       tripType: route.tripType,
       startTime: route.startTime,

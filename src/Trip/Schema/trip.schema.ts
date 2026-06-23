@@ -76,6 +76,10 @@ export class Trip {
     lat?: number;
     long?: number;
   };
+
+  // Geofencing — tracks which zones the van is currently inside
+  @Prop({ type: [String], default: [] })
+  insideZoneIds: string[];
 }
 
 export const TripSchema = SchemaFactory.createForClass(Trip);

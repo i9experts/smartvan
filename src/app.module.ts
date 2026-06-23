@@ -14,7 +14,7 @@ import { AuthModule } from './auth/auth.module';
 import { VanModule } from './van/van.module';
 import { KidModule } from './Kid/kid.module';
 import {UploadModule} from "./upload/upload.module"
-import {SchholModule} from "./school/school.module"
+import {SchoolModule} from "./school/school.module"
 import { FirebaseAdminModule } from './notification/firebase.module';
 import { ReportModule } from './report/report.module';
 import { TripModule } from './Trip/trip.module';
@@ -39,7 +39,7 @@ import { PromotionBannerModule } from './promotion-banner/promotion-banner.modul
     VanModule,
     KidModule,
     UploadModule,
-    SchholModule,
+    SchoolModule,
     FirebaseAdminModule,
     EventsModule,
     ReportModule,
