@@ -15,6 +15,7 @@ import { VanModule } from './van/van.module';
 import { KidModule } from './Kid/kid.module';
 import {UploadModule} from "./upload/upload.module"
 import {SchoolModule} from "./school/school.module"
+import { FeesModule } from "./fees/fees.module"
 import { FirebaseAdminModule } from './notification/firebase.module';
 import { ReportModule } from './report/report.module';
 import { TripModule } from './Trip/trip.module';
@@ -40,6 +41,7 @@ import { PromotionBannerModule } from './promotion-banner/promotion-banner.modul
     KidModule,
     UploadModule,
     SchoolModule,
+    FeesModule,
     FirebaseAdminModule,
     EventsModule,
     ReportModule,
