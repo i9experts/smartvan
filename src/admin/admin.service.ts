@@ -81,6 +81,23 @@ async createAdminAndSchool(body: any) {
 }
 
 
+async editSchoolProfileByAdmin(adminId: string, body: any) {
+  const { schoolInfo, adminInfo } = body;
+  const admin = await this.databaseService.repositories.AdminModel.findById(adminId);
+  if (!admin) throw new NotFoundException('Admin not found');
+  const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminId });
+  if (!school) throw new NotFoundException('School not found');
+  if (adminInfo && Object.keys(adminInfo).length > 0) {
+    const updateFields: any = {};
+    if (adminInfo.name) updateFields.name = adminInfo.name;
+    await this.databaseService.repositories.AdminModel.updateOne({ _id: adminId }, { $set: updateFields });
+  }
+  if (schoolInfo && Object.keys(schoolInfo).length > 0) {
+    await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: schoolInfo });
+  }
+  return { message: 'Profile updated successfully' };
+}
+
 async editAdminAndSchool(body: any) {
   const { schoolId, adminInfo, schoolInfo } = body;
 

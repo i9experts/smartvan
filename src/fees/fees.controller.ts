@@ -71,4 +71,32 @@ export class FeesController {
   async sendReminders(@Body() body: { schoolId: string; month?: string }, @Req() req: any) {
     return this.feesService.sendPaymentReminders(body.schoolId, body.month);
   }
+
+  // Get fee summary stats for dashboard
+  @UseGuards(AuthGuard('jwt'))
+  @Get('summary')
+  async getFeeSummary(@Query('schoolId') schoolId: string, @Query('month') month: string, @Req() req: any) {
+    return this.feesService.getFeeSummary(schoolId || req.user.schoolId, month);
+  }
+
+  // Update payment status (overdue etc)
+  @UseGuards(AuthGuard('jwt'))
+  @Post('update-status')
+  async updateStatus(@Body() body: { paymentId: string; status: string }, @Req() req: any) {
+    return this.feesService.updatePaymentStatus(body.paymentId, body.status);
+  }
+
+  // Delete a fee config
+  @UseGuards(AuthGuard('jwt'))
+  @Post('delete-fee')
+  async deleteFee(@Body() body: { feeId: string }, @Req() req: any) {
+    return this.feesService.deleteFee(body.feeId);
+  }
+
+  // Get payments by student
+  @UseGuards(AuthGuard('jwt'))
+  @Get('student-payments')
+  async getStudentPayments(@Query('kidId') kidId: string, @Req() req: any) {
+    return this.feesService.getStudentPayments(kidId);
+  }
 }

@@ -336,4 +336,48 @@ export class FeesService {
 
     return { message: 'Reminders sent', sent, total: unpaid.length };
   }
+
+  async getFeeSummary(schoolId: string, month?: string) {
+    const targetMonth = month || this.getCurrentMonth();
+    const payments = await this.paymentModel.find({ schoolId, month: targetMonth }).lean();
+    const paid = payments.filter((p: any) => p.status === 'paid');
+    const pending = payments.filter((p: any) => p.status === 'pending');
+    const overdue = payments.filter((p: any) => p.status === 'overdue');
+    const totalCollected = paid.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+    const totalPending = pending.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+    const totalOverdue = overdue.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+    return {
+      message: 'Summary fetched',
+      month: targetMonth,
+      data: {
+        total: payments.length,
+        paid: paid.length,
+        pending: pending.length,
+        overdue: overdue.length,
+        totalCollected,
+        totalPending,
+        totalOverdue,
+        collectionRate: payments.length ? Math.round((paid.length / payments.length) * 100) : 0,
+      }
+    };
+  }
+
+  async updatePaymentStatus(paymentId: string, status: string) {
+    const payment = await this.paymentModel.findById(paymentId);
+    if (!payment) throw new NotFoundException('Payment not found');
+    payment.status = status as any;
+    if (status === 'overdue') payment.paidAt = null;
+    await payment.save();
+    return { message: 'Status updated', data: payment };
+  }
+
+  async deleteFee(feeId: string) {
+    await this.feeModel.findByIdAndUpdate(feeId, { isActive: false });
+    return { message: 'Fee deleted successfully' };
+  }
+
+  async getStudentPayments(kidId: string) {
+    const payments = await this.paymentModel.find({ kidId }).sort({ createdAt: -1 }).lean();
+    return { message: 'Student payments fetched', data: payments };
+  }
 }

@@ -38,6 +38,12 @@ async createAdminAndSchool(@Req() req, @Body() body: any) {
 }
 
 @UseGuards(AuthGuard('jwt'))
+@Post('editSchoolProfile')
+async editSchoolProfile(@Req() req, @Body() body: any) {
+  const adminId = req.user.sub;
+  return this.adminService.editSchoolProfileByAdmin(adminId, body);
+}
+
 @Post('edit-admin-school')
 async editAdminAndSchool(@Req() req, @Body() body: any) {
   // ✅ Role check

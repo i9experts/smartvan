@@ -61,6 +61,33 @@ export class TransportPayment {
 
   @Prop({ required: false })
   receiptNumber: string;
+
+  @Prop({ required: false, default: 'both' })
+  serviceType: string; // 'pick_only' | 'drop_only' | 'both'
+
+  @Prop({ required: false })
+  discountAmount: number;
+
+  @Prop({ required: false })
+  discountType: string; // 'sibling' | 'early_payment' | 'manual'
+
+  @Prop({ required: false })
+  lateFeeAmount: number;
+
+  @Prop({ required: false })
+  dueDate: Date;
+
+  @Prop({ required: false })
+  grade: string;
+
+  @Prop({ required: false })
+  studentName: string;
+
+  @Prop({ required: false })
+  parentName: string;
+
+  @Prop({ required: false })
+  parentPhone: string;
 }
 
 export const TransportPaymentSchema = SchemaFactory.createForClass(TransportPayment);

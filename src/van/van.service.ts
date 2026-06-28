@@ -290,6 +290,8 @@ async getVansByAdmin(
           carNumber: { $ifNull: ['$carNumber', ''] },
           status: { $ifNull: ['$status', ''] },
           ownVan: { $ifNull: ['$ownVan', false] },
+          venCapacity: { $ifNull: ['$venCapacity', null] },
+          expiryDate: { $ifNull: ['$expiryDate', null] },
         },
 
         driver: {
@@ -1375,17 +1377,37 @@ async getDriverById(driverId: string) {
 }
 
 
+
+  async addDriverByAdmin(adminId: string, body: any) {
+    const { fullname, email, password } = body;
+    if (!fullname || !email || !password) {
+      throw new Error('fullname, email and password are required');
+    }
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: new Types.ObjectId(adminId) });
+    if (!school) throw new Error('School not found');
+
+    const existing = await this.databaseService.repositories.driverModel.findOne({ email });
+    if (existing) throw new Error('A driver with this email already exists');
+
+    const bcrypt = require('bcrypt');
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const driver = await this.databaseService.repositories.driverModel.create({
+      fullname,
+      email,
+      phoneNo: body.phoneNo || '',
+      alternatePhoneNo: body.alternatePhoneNo || '',
+      password: hashedPassword,
+      schoolId: school._id.toString(),
+      status: 'active',
+      userType: 'driver',
+      NIC: body.NIC || '',
+      address: body.address || '',
+      expiryDateLicense: body.expiryDateLicense || '',
+      expiryDateVehicleCard: body.expiryDateVehicleCard || '',
+    });
+
+    return { message: 'Driver added successfully', data: { id: driver._id, fullname: driver.fullname, email: driver.email, phoneNo: driver.phoneNo, status: driver.status } };
+  }
+
 }
-
-
-
-
-
-
-
-
-  
-
-  
-
-  
