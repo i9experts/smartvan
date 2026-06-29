@@ -402,6 +402,7 @@ async getAllRoutesByAdmin(adminId: string, query: any) {
         startPoint: 1,
         endPoint: 1,
         tripDays: 1,
+        kidLocations: 1,
         vanId: 1,
         "vanDetails._id": 1,
         "vanDetails.carNumber": 1,
@@ -431,6 +432,7 @@ async getAllRoutesByAdmin(adminId: string, query: any) {
             startPoint: "$startPoint",
             endPoint: "$endPoint",
             tripDays: "$tripDays",
+            kidLocations: "$kidLocations",
           },
         },
 
