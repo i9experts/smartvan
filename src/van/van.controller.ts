@@ -186,7 +186,7 @@ async changeVanStatus(
 @UseGuards(AuthGuard('jwt'))
 @Post('addDriverByAdmin')
 async addDriverByAdmin(@Req() req: any, @Body() body: any) {
-  return this.vanService.addDriverByAdmin(req.user.sub, body);
+  return this.vanService.addDriverByAdmin(req.user.userId, body);
 }
 
 @Post('removeDriverFromVan')
