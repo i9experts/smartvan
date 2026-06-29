@@ -602,8 +602,6 @@ async removeDriverFromVan(vanId: string , adminId: string) {
 
     const driver = await this.databaseService.repositories.driverModel.findOne({
     _id: driverId,
-    schoolId: school._id.toString(),
-    isDelete: false,
   });
 
     if (driver) {

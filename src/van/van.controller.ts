@@ -189,6 +189,7 @@ async addDriverByAdmin(@Req() req: any, @Body() body: any) {
   return this.vanService.addDriverByAdmin(req.user.userId, body);
 }
 
+@UseGuards(AuthGuard('jwt'))
 @Post('removeDriverFromVan')
 async removeDriverFromVan(
   @Req() req: any,
