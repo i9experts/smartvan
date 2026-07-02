@@ -93,7 +93,10 @@ async editSchoolProfileByAdmin(adminId: string, body: any) {
     await this.databaseService.repositories.AdminModel.updateOne({ _id: adminId }, { $set: updateFields });
   }
   if (schoolInfo && Object.keys(schoolInfo).length > 0) {
-    await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: schoolInfo });
+    const allowedFields = ['schoolName', 'schoolEmail', 'contactPerson', 'contactNumber', 'address', 'branchName', 'startTime', 'endTime', 'maxTripDuration', 'bufferTime', 'currency', 'country', 'timezone'];
+    const filtered: any = {};
+    allowedFields.forEach(f => { if (schoolInfo[f] !== undefined) filtered[f] = schoolInfo[f]; });
+    await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: filtered });
   }
   return { message: 'Profile updated successfully' };
 }
