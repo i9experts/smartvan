@@ -675,5 +675,83 @@ async editRoute(adminId: string, routeId: string, dto: CreateRouteDto) {
 
 
 
-}
+  async assignStudentToRoute(adminId: string, routeId: string, kidId: string, lat: number, long: number) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new UnauthorizedException('School not found');
 
+    const route = await this.databaseService.repositories.routeModel.findOne({
+      _id: new Types.ObjectId(routeId),
+      schoolId: school._id.toString(),
+    });
+    if (!route) throw new BadRequestException('Route not found');
+
+    const alreadyAssigned = route.kidLocations?.find((k: any) => k.kidId?.toString() === kidId);
+    if (alreadyAssigned) throw new BadRequestException('Student already assigned to this route');
+
+    await this.databaseService.repositories.routeModel.updateOne(
+      { _id: route._id },
+      { $push: { kidLocations: { kidId: new Types.ObjectId(kidId), lat: lat || 0, long: long || 0 } } }
+    );
+
+    if (route.vanId) {
+      await this.databaseService.repositories.KidModel.updateOne(
+        { _id: new Types.ObjectId(kidId) },
+        { $set: { VanId: route.vanId, routeId: routeId } }
+      );
+    }
+
+    return { message: 'Student assigned to route successfully' };
+  }
+
+  async removeStudentFromRoute(adminId: string, routeId: string, kidId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    await this.databaseService.repositories.routeModel.updateOne(
+      { _id: new Types.ObjectId(routeId), schoolId: school._id.toString() },
+      { $pull: { kidLocations: { kidId: new Types.ObjectId(kidId) } } }
+    );
+
+    await this.databaseService.repositories.KidModel.updateOne(
+      { _id: new Types.ObjectId(kidId) },
+      { $unset: { VanId: '', routeId: '' } }
+    );
+
+    return { message: 'Student removed from route successfully' };
+  }
+
+  async getStudentRoutes(adminId: string, kidId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const routes = await this.databaseService.repositories.routeModel.find({
+      schoolId: school._id.toString(),
+      'kidLocations.kidId': new Types.ObjectId(kidId),
+    }).lean();
+
+    return { message: 'Student routes fetched', data: routes };
+  }
+
+  async getRouteStudents(adminId: string, routeId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const route = await this.databaseService.repositories.routeModel.findOne({
+      _id: new Types.ObjectId(routeId),
+      schoolId: school._id.toString(),
+    }).lean();
+    if (!route) throw new BadRequestException('Route not found');
+
+    const kidIds = (route as any).kidLocations?.map((k: any) => k.kidId) ?? [];
+    const students = await this.databaseService.repositories.KidModel.find({
+      _id: { $in: kidIds },
+    }).lean();
+
+    return { message: 'Route students fetched', data: students };
+  }
+
+}
