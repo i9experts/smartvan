@@ -23,6 +23,7 @@ import { RouteModule } from './route/route.module';
 import { AlertModule } from './alert/alert.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { PromotionBannerModule } from './promotion-banner/promotion-banner.module';
+import { WhatsappModule } from './whatsapp/whatsapp.module';
 
 
 
@@ -49,9 +50,8 @@ import { PromotionBannerModule } from './promotion-banner/promotion-banner.modul
     RouteModule,
     AlertModule,
     InvoiceModule,
-    PromotionBannerModule
-    
-
+    PromotionBannerModule,
+    WhatsappModule,
   ],
   controllers: [AppController],
   providers: [AppService],
