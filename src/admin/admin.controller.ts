@@ -354,4 +354,25 @@ async getAllDriversForSuperAdmin(
 }
 
 
+  @UseGuards(AuthGuard('jwt'))
+  @Post('connectWhatsApp')
+  async connectWhatsApp(@Req() req: any, @Body() body: any) {
+    const adminId = req.user.userId;
+    return this.adminService.connectWhatsApp(adminId, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('disconnectWhatsApp')
+  async disconnectWhatsApp(@Req() req: any) {
+    const adminId = req.user.userId;
+    return this.adminService.disconnectWhatsApp(adminId);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('sendWhatsApp')
+  async sendWhatsApp(@Req() req: any, @Body() body: { to: string; message: string }) {
+    const adminId = req.user.userId;
+    return this.adminService.sendWhatsAppMessage(adminId, body.to, body.message);
+  }
+
 }

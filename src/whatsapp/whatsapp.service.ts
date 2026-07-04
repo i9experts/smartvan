@@ -7,6 +7,28 @@ export class WhatsappService {
   private readonly phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   private readonly apiUrl = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
+  // Send using school's own WhatsApp credentials
+  async sendWithSchoolCredentials(phoneNumberId: string, accessToken: string, to: string, message: string): Promise<any> {
+    try {
+      const cleaned = this.formatPhone(to);
+      const response = await axios.post(
+        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: cleaned,
+          type: 'text',
+          text: { body: message },
+        },
+        { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+      );
+      return { success: true, data: response.data };
+    } catch (e: any) {
+      console.error('WhatsApp school send error:', e?.response?.data);
+      return { success: false, error: e?.response?.data };
+    }
+  }
+
   private formatPhone(phone: string): string {
     let cleaned = phone.replace(/[^0-9]/g, '');
     if (cleaned.startsWith('0')) cleaned = '92' + cleaned.substring(1);

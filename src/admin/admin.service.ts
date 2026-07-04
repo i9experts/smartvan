@@ -1763,4 +1763,76 @@ async getAllDriversForSuperAdmin(
 
 
 
+  async connectWhatsApp(adminId: string, body: { wabaId: string; waPhoneNumberId: string; waAccessToken: string; waPhoneNumber: string }) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new Error('School not found');
+
+    // Test the credentials by sending a test request
+    const axios = require('axios');
+    try {
+      await axios.get(`https://graph.facebook.com/v19.0/${body.waPhoneNumberId}`, {
+        headers: { Authorization: `Bearer ${body.waAccessToken}` }
+      });
+    } catch (e: any) {
+      throw new Error('Invalid WhatsApp credentials. Please check your Phone Number ID and Access Token.');
+    }
+
+    await this.databaseService.repositories.SchoolModel.updateOne(
+      { _id: school._id },
+      { $set: {
+        wabaId: body.wabaId,
+        waPhoneNumberId: body.waPhoneNumberId,
+        waAccessToken: body.waAccessToken,
+        waPhoneNumber: body.waPhoneNumber,
+        waConnected: true,
+      }}
+    );
+
+    return { message: 'WhatsApp connected successfully', waPhoneNumber: body.waPhoneNumber };
+  }
+
+  async disconnectWhatsApp(adminId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new Error('School not found');
+
+    await this.databaseService.repositories.SchoolModel.updateOne(
+      { _id: school._id },
+      { $set: { wabaId: null, waPhoneNumberId: null, waAccessToken: null, waPhoneNumber: null, waConnected: false } }
+    );
+
+    return { message: 'WhatsApp disconnected successfully' };
+  }
+
+  async sendWhatsAppMessage(adminId: string, to: string, message: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new Error('School not found');
+    if (!school.waConnected || !school.waPhoneNumberId || !school.waAccessToken) {
+      throw new Error('WhatsApp not connected. Please connect your WhatsApp number in Settings.');
+    }
+
+    const axios = require('axios');
+    let cleaned = to.replace(/[^0-9]/g, '');
+    if (cleaned.startsWith('0')) cleaned = '92' + cleaned.substring(1);
+    if (!cleaned.startsWith('92') && !cleaned.startsWith('971') && !cleaned.startsWith('966') && !cleaned.startsWith('974')) {
+      cleaned = '92' + cleaned;
+    }
+
+    const response = await axios.post(
+      `https://graph.facebook.com/v19.0/${school.waPhoneNumberId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: cleaned,
+        type: 'text',
+        text: { body: message },
+      },
+      { headers: { Authorization: `Bearer ${school.waAccessToken}`, 'Content-Type': 'application/json' } }
+    );
+
+    return { success: true, data: response.data };
+  }
+
 }
