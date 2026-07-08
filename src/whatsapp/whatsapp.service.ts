@@ -38,6 +38,39 @@ export class WhatsappService {
     return cleaned;
   }
 
+  async sendTemplateMessage(to: string, parentName: string, message: string): Promise<any> {
+    try {
+      const cleaned = this.formatPhone(to);
+      const response = await axios.post(
+        this.apiUrl,
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: cleaned,
+          type: 'template',
+          template: {
+            name: 'smartvan_alert',
+            language: { code: 'en' },
+            components: [
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: parentName || 'Parent' },
+                  { type: 'text', text: message },
+                ],
+              },
+            ],
+          },
+        },
+        { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' } }
+      );
+      return { success: true, data: response.data };
+    } catch (e: any) {
+      console.error('WhatsApp template send error:', e?.response?.data);
+      return { success: false, error: e?.response?.data };
+    }
+  }
+
   async sendTextMessage(to: string, message: string): Promise<any> {
     try {
       const response = await axios.post(
@@ -59,8 +92,8 @@ export class WhatsappService {
   }
 
   async sendFeeReminder(to: string, parentName: string, studentName: string, amount: number, currency: string, month: string): Promise<any> {
-    const message = `Dear ${parentName},\n\nThis is a reminder that the transport fee for *${studentName}* is due.\n\n💰 Amount: *${currency} ${amount.toLocaleString()}*\n📅 Month: *${month}*\n\nPlease contact the school to arrange payment.\n\n_SmartVan - Safe Ride, Every Side_ 🚐`;
-    return this.sendTextMessage(to, message);
+    const message = `Transport fee for ${studentName} is due. Amount: ${currency} ${amount.toLocaleString()} for ${month}. Please contact the school to arrange payment.`;
+    return this.sendTemplateMessage(to, parentName, message);
   }
 
   async sendLoginCredentials(to: string, parentName: string, email: string, password: string, schoolName: string): Promise<any> {
@@ -69,10 +102,9 @@ export class WhatsappService {
   }
 
   async sendTripAlert(to: string, parentName: string, studentName: string, status: 'picked' | 'dropped', time: string): Promise<any> {
-    const emoji = status === 'picked' ? '🚐' : '🏠';
     const action = status === 'picked' ? 'has been picked up' : 'has been dropped off safely';
-    const message = `${emoji} Dear ${parentName},\n\n*${studentName}* ${action} at *${time}*.\n\n_SmartVan - Safe Ride, Every Side_`;
-    return this.sendTextMessage(to, message);
+    const message = `${studentName} ${action} at ${time}.`;
+    return this.sendTemplateMessage(to, parentName, message);
   }
 
   async sendAttendanceReport(to: string, parentName: string, studentName: string, present: number, absent: number, total: number): Promise<any> {

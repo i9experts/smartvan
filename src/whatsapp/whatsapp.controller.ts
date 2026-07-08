@@ -51,7 +51,7 @@ export class WhatsappController {
   @UseGuards(AuthGuard('jwt'))
   @Post('send-test')
   async sendTest(@Body() body: any) {
-    const { to, message } = body;
-    return this.whatsappService.sendTextMessage(to, message);
+    const { to, message, parentName } = body;
+    return this.whatsappService.sendTemplateMessage(to, parentName || 'Parent', message);
   }
 }
