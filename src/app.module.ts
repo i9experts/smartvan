@@ -24,6 +24,7 @@ import { AlertModule } from './alert/alert.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { PromotionBannerModule } from './promotion-banner/promotion-banner.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
+import { BillingModule } from './billing/billing.module';
 
 
 
@@ -52,6 +53,7 @@ import { WhatsappModule } from './whatsapp/whatsapp.module';
     InvoiceModule,
     PromotionBannerModule,
     WhatsappModule,
+    BillingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

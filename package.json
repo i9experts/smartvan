@@ -54,6 +54,7 @@
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.1",
     "socketio-jwt": "^4.6.2",
+    "stripe": "^22.3.0",
     "swagger-ui-express": "^5.0.1",
     "websockets": "^0.2.0"
   },
