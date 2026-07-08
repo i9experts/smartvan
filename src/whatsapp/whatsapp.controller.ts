@@ -49,6 +49,41 @@ export class WhatsappController {
   }
 
   @UseGuards(AuthGuard('jwt'))
+  @Post('send-school-welcome')
+  async sendSchoolWelcome(@Body() body: any) {
+    const { to, contactPerson, schoolName } = body;
+    return this.whatsappService.sendSchoolWelcome(to, contactPerson, schoolName);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('send-parent-welcome')
+  async sendParentWelcome(@Body() body: any) {
+    const { to, parentName, studentName, schoolName } = body;
+    return this.whatsappService.sendParentWelcome(to, parentName, studentName, schoolName);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('send-driver-welcome')
+  async sendDriverWelcome(@Body() body: any) {
+    const { to, driverName, schoolName, vanNumber } = body;
+    return this.whatsappService.sendDriverWelcome(to, driverName, schoolName, vanNumber);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('send-fee-reminder-template')
+  async sendFeeReminderTemplate(@Body() body: any) {
+    const { to, parentName, studentName, month, amount } = body;
+    return this.whatsappService.sendFeeReminderTemplate(to, parentName, studentName, month, amount);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('send-sos')
+  async sendSosAlert(@Body() body: any) {
+    const { to, parentName, studentName, vanNumber, schoolPhone } = body;
+    return this.whatsappService.sendSosAlert(to, parentName, studentName, vanNumber, schoolPhone);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
   @Post('send-test')
   async sendTest(@Body() body: any) {
     const { to, message, parentName } = body;

@@ -107,6 +107,122 @@ export class WhatsappService {
     return this.sendTemplateMessage(to, parentName, message);
   }
 
+  async sendSchoolWelcome(to: string, contactPerson: string, schoolName: string): Promise<any> {
+    try {
+      const response = await axios.post(this.apiUrl, {
+        messaging_product: 'whatsapp',
+        to: this.formatPhone(to),
+        type: 'template',
+        template: {
+          name: 'smartvan_welcome',
+          language: { code: 'en' },
+          components: [{
+            type: 'body',
+            parameters: [
+              { type: 'text', text: contactPerson },
+              { type: 'text', text: schoolName },
+            ],
+          }],
+        },
+      }, { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' } });
+      return { success: true, data: response.data };
+    } catch (e: any) { return { success: false, error: e?.response?.data }; }
+  }
+
+  async sendParentWelcome(to: string, parentName: string, studentName: string, schoolName: string): Promise<any> {
+    try {
+      const response = await axios.post(this.apiUrl, {
+        messaging_product: 'whatsapp',
+        to: this.formatPhone(to),
+        type: 'template',
+        template: {
+          name: 'smartvan_parent_welcome',
+          language: { code: 'en' },
+          components: [{
+            type: 'body',
+            parameters: [
+              { type: 'text', text: parentName },
+              { type: 'text', text: studentName },
+              { type: 'text', text: schoolName },
+            ],
+          }],
+        },
+      }, { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' } });
+      return { success: true, data: response.data };
+    } catch (e: any) { return { success: false, error: e?.response?.data }; }
+  }
+
+  async sendDriverWelcome(to: string, driverName: string, schoolName: string, vanNumber: string): Promise<any> {
+    try {
+      const response = await axios.post(this.apiUrl, {
+        messaging_product: 'whatsapp',
+        to: this.formatPhone(to),
+        type: 'template',
+        template: {
+          name: 'smartvan_driver_welcome',
+          language: { code: 'en' },
+          components: [{
+            type: 'body',
+            parameters: [
+              { type: 'text', text: driverName },
+              { type: 'text', text: schoolName },
+              { type: 'text', text: vanNumber },
+            ],
+          }],
+        },
+      }, { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' } });
+      return { success: true, data: response.data };
+    } catch (e: any) { return { success: false, error: e?.response?.data }; }
+  }
+
+  async sendFeeReminderTemplate(to: string, parentName: string, studentName: string, month: string, amount: string): Promise<any> {
+    try {
+      const response = await axios.post(this.apiUrl, {
+        messaging_product: 'whatsapp',
+        to: this.formatPhone(to),
+        type: 'template',
+        template: {
+          name: 'smartvan_fee_reminder',
+          language: { code: 'en' },
+          components: [{
+            type: 'body',
+            parameters: [
+              { type: 'text', text: parentName },
+              { type: 'text', text: studentName },
+              { type: 'text', text: month },
+              { type: 'text', text: amount },
+            ],
+          }],
+        },
+      }, { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' } });
+      return { success: true, data: response.data };
+    } catch (e: any) { return { success: false, error: e?.response?.data }; }
+  }
+
+  async sendSosAlert(to: string, parentName: string, studentName: string, vanNumber: string, schoolPhone: string): Promise<any> {
+    try {
+      const response = await axios.post(this.apiUrl, {
+        messaging_product: 'whatsapp',
+        to: this.formatPhone(to),
+        type: 'template',
+        template: {
+          name: 'smartvan_sos',
+          language: { code: 'en' },
+          components: [{
+            type: 'body',
+            parameters: [
+              { type: 'text', text: parentName },
+              { type: 'text', text: studentName },
+              { type: 'text', text: vanNumber },
+              { type: 'text', text: schoolPhone },
+            ],
+          }],
+        },
+      }, { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' } });
+      return { success: true, data: response.data };
+    } catch (e: any) { return { success: false, error: e?.response?.data }; }
+  }
+
   async sendAttendanceReport(to: string, parentName: string, studentName: string, present: number, absent: number, total: number): Promise<any> {
     const rate = total > 0 ? Math.round((present / total) * 100) : 0;
     const message = `📋 *Monthly Attendance Report*\n\nDear ${parentName},\n\nHere is the attendance summary for *${studentName}*:\n\n✅ Present: *${present} days*\n❌ Absent: *${absent} days*\n📊 Attendance Rate: *${rate}%*\n\n_SmartVan - Safe Ride, Every Side_ 🚐`;
