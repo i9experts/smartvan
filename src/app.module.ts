@@ -25,6 +25,7 @@ import { InvoiceModule } from './invoice/invoice.module';
 import { PromotionBannerModule } from './promotion-banner/promotion-banner.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { BillingModule } from './billing/billing.module';
+import { ContactController } from './admin/contact.controller';
 
 
 
@@ -55,7 +56,7 @@ import { BillingModule } from './billing/billing.module';
     WhatsappModule,
     BillingModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, ContactController],
   providers: [AppService],
 })
 export class AppModule {}
