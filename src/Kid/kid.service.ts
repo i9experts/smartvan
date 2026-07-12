@@ -5,6 +5,7 @@ import { CreateKidDto } from './dto/CreateKid.dto';
 import { Types } from 'mongoose';
 import mongoose from 'mongoose';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { Kid } from './kid.schema';
 import { title } from 'process';
 
@@ -17,7 +18,8 @@ export class KidService {
   constructor(
    
     private databaseService: DatabaseService,
-    private firebaseAdminService: FirebaseAdminService
+    private firebaseAdminService: FirebaseAdminService,
+    private whatsappService: WhatsappService
 
    
   ) {}
@@ -70,6 +72,14 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
 
   const savedKid = await newKid.save();
 
+  // Step 5b: Notify the school (via WhatsApp) that a new student is
+  // pending verification — fire-and-forget, never blocks kid creation.
+  if (CreateKidDto.schoolId) {
+    this.notifySchoolOfNewStudent(CreateKidDto.schoolId, Parent, savedKid).catch(
+      (err) => console.error('School new-student notify failed:', err?.message || err),
+    );
+  }
+
   // Step 6: Send notification ONLY if driver exists
   if (driver) {
     const title = 'New Kid Assigned';
@@ -106,6 +116,30 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
     data: savedKid,
   };
 }
+
+// Notifies the school's registered contact number via WhatsApp when a
+// parent self-adds a kid and links a school — so the admin knows to
+// verify/activate the student on their dashboard. Uses the school's own
+// WABA credentials if connected, otherwise falls back to the platform's
+// default WhatsApp number.
+private async notifySchoolOfNewStudent(schoolId: string, parent: any, kid: any) {
+  const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
+  if (!school || !school.contactNumber) return;
+
+  const message = `New student pending verification 🎒\n\nStudent: ${kid.fullname || 'N/A'}\nParent: ${parent.fullname || parent.email}\nContact: ${parent.phoneNo || parent.email}\n\nPlease review and verify this student in your SmartVan admin dashboard.`;
+
+  if (school.waConnected && school.waPhoneNumberId && school.waAccessToken) {
+    await this.whatsappService.sendWithSchoolCredentials(
+      school.waPhoneNumberId,
+      school.waAccessToken,
+      school.contactNumber,
+      message,
+    );
+  } else {
+    await this.whatsappService.sendTextMessage(school.contactNumber, message);
+  }
+}
+
 async getKids(userId: string, userType: string) {
 
 
@@ -855,6 +889,24 @@ async verifyStudentsByAdmin(
           },
         },
       );
+    }
+
+    // 💬 WhatsApp — uses the school's own WABA if connected, else platform default
+    if (parent.phoneNo) {
+      try {
+        if (school.waConnected && school.waPhoneNumberId && school.waAccessToken) {
+          await this.whatsappService.sendWithSchoolCredentials(
+            school.waPhoneNumberId,
+            school.waAccessToken,
+            parent.phoneNo,
+            message,
+          );
+        } else {
+          await this.whatsappService.sendTextMessage(parent.phoneNo, message);
+        }
+      } catch (err) {
+        console.error('Parent verification WhatsApp send failed:', err?.message || err);
+      }
     }
 
     await this.databaseService.repositories.notificationModel.create({

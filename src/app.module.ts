@@ -25,6 +25,11 @@ import { InvoiceModule } from './invoice/invoice.module';
 import { PromotionBannerModule } from './promotion-banner/promotion-banner.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { BillingModule } from './billing/billing.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { ComplianceModule } from './compliance/compliance.module';
+import { EmployeeModule } from './employee/employee.module';
+import { AuditLogModule } from './audit-log/audit-log.module';
+import { SearchModule } from './search/search.module';
 import { ContactController } from './admin/contact.controller';
 
 
@@ -55,6 +60,11 @@ import { ContactController } from './admin/contact.controller';
     PromotionBannerModule,
     WhatsappModule,
     BillingModule,
+    ScheduleModule.forRoot(),
+    ComplianceModule,
+    EmployeeModule,
+    AuditLogModule,
+    SearchModule,
   ],
   controllers: [AppController, ContactController],
   providers: [AppService],

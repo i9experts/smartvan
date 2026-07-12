@@ -8,10 +8,14 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { OtpModule } from 'src/user/schema/otp/otp.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { SchoolLead, SchoolLeadSchema } from './school-lead.schema';
+import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
+import { AuditLogModule } from 'src/audit-log/audit-log.module';
 
 @Module({
   imports: [
     OtpModule,
+    WhatsappModule,
+    AuditLogModule,
     ConfigModule,
     PassportModule,
     MongooseModule.forFeature([

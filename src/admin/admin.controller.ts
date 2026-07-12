@@ -133,10 +133,11 @@ async getAllSchools() {
 async addKid(
   @Body() AddStudentDto : AddStudentDto , // sirf kid ke fields
   @Body('parentEmail') parentEmail: string, // alag se lo
+  @Body('parentPhone') parentPhone: string, // optional — enables WhatsApp for brand-new parents
   @Req() req: any,
 ) {
   const AdminId = req.user.userId;
-  return this.adminService.addKid(AddStudentDto , AdminId, parentEmail);
+  return this.adminService.addKid(AddStudentDto , AdminId, parentEmail, parentPhone);
 }
 
 @UseGuards(AuthGuard('jwt'))

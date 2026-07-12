@@ -9,6 +9,8 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { OtpService } from 'src/user/schema/otp/otp.service';
 import { SchoolDocument } from './school.schema';
 import { SchoolLead, SchoolLeadDocument } from './school-lead.schema';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
+import { AuditLogService } from 'src/audit-log/audit-log.service';
 
 @Injectable()
 export class SchoolService {
@@ -17,6 +19,8 @@ export class SchoolService {
     private readonly otpService: OtpService,
     private readonly jwtService: JwtService,
     @InjectModel(SchoolLead.name) private leadModel: Model<SchoolLeadDocument>,
+    private readonly whatsappService: WhatsappService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   // ── Email helper ──────────────────────────────────────────────
@@ -52,7 +56,9 @@ export class SchoolService {
       status:       'new',
     });
 
-    // Send email notification
+    // Send email notification — fire-and-forget so a slow/failed SMTP send
+    // never blocks or breaks the client's response (lead is already saved above)
+    (async () => {
     try {
       const mailer = this.getMailer();
       await mailer.sendMail({
@@ -92,6 +98,7 @@ export class SchoolService {
     } catch (emailErr) {
       console.error('Email notification failed:', emailErr.message);
     }
+    })();
 
     return {
       message: 'Registration submitted successfully',
@@ -147,6 +154,12 @@ export class SchoolService {
           status: 'active',
           admin: admin._id,
         });
+
+        // Send WhatsApp welcome — fire-and-forget, never block activation on delivery
+        if (lead.phone) {
+          this.whatsappService.sendSchoolWelcome(lead.phone, lead.adminName, lead.schoolName)
+            .catch((err) => console.error('WhatsApp school welcome failed:', err));
+        }
 
         // Send welcome email with credentials
         try {
@@ -256,7 +269,7 @@ export class SchoolService {
     return this.databaseService.repositories.SchoolModel.find().sort({ _id: -1 }).lean();
   }
 
-  async changeSchoolStatusByAdmin(schoolId: string, status: string) {
+  async changeSchoolStatusByAdmin(schoolId: string, status: string, actor?: { userId: string; email: string; role: string }) {
     if (status !== 'active' && status !== 'inActive') {
       throw new BadRequestException('Invalid status value');
     }
@@ -264,6 +277,17 @@ export class SchoolService {
     if (!school) throw new UnauthorizedException('School not found');
     school.status = status;
     await school.save();
+
+    if (actor) {
+      this.auditLogService.record(
+        status === 'active' ? 'school_activated' : 'school_suspended',
+        actor.userId,
+        actor.email,
+        actor.role,
+        { schoolId: school._id.toString(), schoolName: (school as any).schoolName },
+      );
+    }
+
     return { message: `School status updated to ${status}`, schoolId: school._id, status: school.status };
   }
 }

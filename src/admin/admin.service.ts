@@ -8,6 +8,8 @@ import * as crypto from 'crypto';
 import { AddStudentDto } from './dto/addStudent.dto';
 import { Types } from 'mongoose';
 import { EditStudentDto } from './dto/editStudent.dto';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
+import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 
 import mongoose from 'mongoose';
 
@@ -21,7 +23,9 @@ export class AdminService {
     private databaseService: DatabaseService,
     private readonly otpService: OtpService, 
 
-    private readonly jwtService: JwtService
+    private readonly jwtService: JwtService,
+    private readonly whatsappService: WhatsappService,
+    private readonly firebaseAdminService: FirebaseAdminService
   ) {}
   
 async createAdminAndSchool(body: any) {
@@ -494,7 +498,7 @@ async getallschool() {
     data: updatedSchools,
   };
 }
-  async addKid(AddStudentDto: AddStudentDto, AdminId: string, parentEmail: string) {
+  async addKid(AddStudentDto: AddStudentDto, AdminId: string, parentEmail: string, parentPhone?: string) {
 
 const adminObjectId = new Types.ObjectId(AdminId);
 
@@ -508,9 +512,7 @@ const adminObjectId = new Types.ObjectId(AdminId);
  
   let parent = await this.databaseService.repositories.parentModel.findOne({ email: parentEmail });
 
-
-  
-
+  const isNewParent = !parent;
 
   if (!parent) {
     const username = parentEmail.split('@')[0];
@@ -528,8 +530,17 @@ const adminObjectId = new Types.ObjectId(AdminId);
       schoolId: school._id,
       password: hashedPassword,
       isVerified: true,
+      ...(parentPhone ? { phoneNo: parentPhone } : {}),
     });
     parent = await parent.save();
+
+    // Also send login credentials via WhatsApp if we have a phone number —
+    // fire-and-forget, never blocks account creation.
+    if (parentPhone) {
+      this.whatsappService
+        .sendLoginCredentials(parentPhone, username, parentEmail, randomPassword, school.schoolName)
+        .catch((err) => console.error('New parent WhatsApp send failed:', err?.message || err));
+    }
   }
 
 
@@ -541,12 +552,43 @@ const adminObjectId = new Types.ObjectId(AdminId);
 
   const savedKid = await newKid.save();
 
+  // Notify an EXISTING parent (WhatsApp + push) that a child was linked
+  // to their account — fire-and-forget.
+  if (!isNewParent) {
+    this.notifyExistingParentOfNewStudent(parent, savedKid, school).catch(
+      (err) => console.error('Existing parent notify failed:', err?.message || err),
+    );
+  }
+
   // Step 5: Return response
   return {
     message: 'Kid added successfully',
     data: savedKid,
   };
 }
+
+// Notifies an existing parent (WhatsApp + push) that the school linked a
+// new child to their account. Fire-and-forget — failures are logged only.
+private async notifyExistingParentOfNewStudent(parent: any, kid: any, school: any) {
+  if (parent.phoneNo) {
+    await this.whatsappService.sendParentWelcome(
+      parent.phoneNo,
+      parent.fullname,
+      kid.fullname || 'your child',
+      school.schoolName,
+    );
+  }
+
+  if (parent.fcmToken && parent.notificationToggle !== false) {
+    await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+      notification: {
+        title: 'Child Added',
+        body: `${kid.fullname || 'Your child'} has been added to ${school.schoolName} on SmartVan.`,
+      },
+    });
+  }
+}
+
 
 // async getKids(AdminId: string, query: any) {
 //   const adminObjectId = new Types.ObjectId(AdminId);

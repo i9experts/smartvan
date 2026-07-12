@@ -4,6 +4,7 @@ import { DatabaseService } from "src/database/databaseservice";
 import { CreateVanDto } from './dto/create-van.dto';
 import { OtpService } from 'src/user/schema/otp/otp.service';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { EditVanByAdminDto } from './dto/editVanByAdmin.dto';
 import { CreateVanByAdminDto } from './dto/createVanByAdmin.dto';
 import { Types } from 'mongoose';
@@ -22,7 +23,8 @@ export class VanService {
    
     private databaseService: DatabaseService,
     private  OtpService:  OtpService,
-     private firebaseAdminService: FirebaseAdminService
+     private firebaseAdminService: FirebaseAdminService,
+     private whatsappService: WhatsappService
     
 
    
@@ -176,7 +178,15 @@ async addVanByAdmin(dto: CreateVanByAdminDto, adminId: string) {
       venCapacity: dto.venCapacity,
       deviceId: dto.deviceId,
       assignRoute: dto.assignRoute,
-      venImage: dto.venImage
+      venImage: dto.venImage,
+      ...(dto.insuranceExpiry && { insuranceExpiry: new Date(dto.insuranceExpiry) }),
+      ...(dto.registrationExpiry && { registrationExpiry: new Date(dto.registrationExpiry) }),
+      ...(dto.fitnessExpiry && { fitnessExpiry: new Date(dto.fitnessExpiry) }),
+      ...(dto.routePermitExpiry && { routePermitExpiry: new Date(dto.routePermitExpiry) }),
+      ...(dto.insuranceDocUrl && { insuranceDocUrl: dto.insuranceDocUrl }),
+      ...(dto.registrationDocUrl && { registrationDocUrl: dto.registrationDocUrl }),
+      ...(dto.fitnessDocUrl && { fitnessDocUrl: dto.fitnessDocUrl }),
+      ...(dto.routePermitDocUrl && { routePermitDocUrl: dto.routePermitDocUrl }),
     },
   },
   { new: true }, // updated document return kare
@@ -1405,7 +1415,141 @@ async getDriverById(driverId: string) {
       expiryDateVehicleCard: body.expiryDateVehicleCard || '',
     });
 
+    // Send WhatsApp welcome — fire-and-forget, never block driver creation on delivery
+    if (driver.phoneNo) {
+      this.whatsappService.sendDriverWelcome(driver.phoneNo, driver.fullname, (school as any).schoolName, 'To be assigned')
+        .catch((err) => console.error('WhatsApp driver welcome failed:', err));
+    }
+
     return { message: 'Driver added successfully', data: { id: driver._id, fullname: driver.fullname, email: driver.email, phoneNo: driver.phoneNo, status: driver.status } };
+  }
+
+
+
+  async getFleetOverview(adminId: string, page = 1, limit = 100) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new UnauthorizedException('Schoo' + 'l not found');
+    const schoolIdString = school._id.toString();
+
+    const skip = (page - 1) * limit;
+    const vans = await this.databaseService.repositories.VanModel.find({ schoolId: schoolIdString }).skip(skip).limit(limit);
+    const total = await this.databaseService.repositories.VanModel.countDocuments({ schoolId: schoolIdString });
+
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const gpsWindow24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const gpsWindow7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const results = [];
+    let sumHealth = 0;
+    let criticalCount = 0;
+    let docIssueCount = 0;
+    let gpsEnabledCount = 0;
+    let driverAssignedCount = 0;
+    let activeCount = 0;
+
+    for (const van of vans) {
+      const docFields = [van.insuranceExpiry, van.registrationExpiry, van.fitnessExpiry];
+      let docScore = 0;
+      let docIssues = 0;
+      for (const d of docFields) {
+        if (!d) { docIssues++; continue; }
+        const expiryDate = new Date(d);
+        if (expiryDate < now) { docIssues++; continue; }
+        const daysLeft = Math.floor((expiryDate.getTime() - now.getTime()) / 86400000);
+        if (daysLeft <= 30) { docScore += (40 / 3) * 0.5; docIssues++; }
+        else { docScore += (40 / 3); }
+      }
+
+      const lastTrip = await this.databaseService.repositories.TripModel.findOne({ vanId: van._id.toString() }).sort({ updatedAt: -1 });
+      let lastPingAt: Date | null = null;
+      if (lastTrip) {
+        if (lastTrip.locations && lastTrip.locations.length > 0) {
+          lastPingAt = new Date(lastTrip.locations[lastTrip.locations.length - 1].time);
+        } else {
+          lastPingAt = (lastTrip as any).updatedAt;
+        }
+      }
+      let gpsScore = 0;
+      if (lastPingAt) {
+        if (lastPingAt >= gpsWindow24h) gpsScore = 20;
+        else if (lastPingAt >= gpsWindow7d) gpsScore = 10;
+      }
+      const gpsEnabled = gpsScore > 0;
+      if (gpsEnabled) gpsEnabledCount++;
+
+      const driverScore = van.driverId ? 15 : 0;
+      if (van.driverId) driverAssignedCount++;
+
+      const totalTrips = await this.databaseService.repositories.TripModel.countDocuments({ vanId: van._id.toString(), createdAt: { $gte: thirtyDaysAgo } });
+      const completedTrips = await this.databaseService.repositories.TripModel.countDocuments({ vanId: van._id.toString(), createdAt: { $gte: thirtyDaysAgo }, status: 'end' });
+      const tripScore = totalTrips > 0 ? Math.round((completedTrips / totalTrips) * 25) : 0;
+
+      const healthScore = Math.round(docScore + gpsScore + driverScore + tripScore);
+      sumHealth += healthScore;
+      if (healthScore < 40) criticalCount++;
+      if (docIssues > 0) docIssueCount++;
+      if (van.status === 'active') activeCount++;
+
+      let driverInfo = null;
+      if (van.driverId) {
+        const driver = await this.databaseService.repositories.driverModel.findById(van.driverId);
+        if (driver) {
+          const driverVans = await this.databaseService.repositories.VanModel.find({ driverId: van.driverId }).select('_id');
+          const driverVanIds = driverVans.map((v: any) => v._id.toString());
+
+          const driverTotalTrips = await this.databaseService.repositories.TripModel.countDocuments({ vanId: { $in: driverVanIds }, createdAt: { $gte: thirtyDaysAgo } });
+          const driverCompletedTrips = await this.databaseService.repositories.TripModel.countDocuments({ vanId: { $in: driverVanIds }, createdAt: { $gte: thirtyDaysAgo }, status: 'end' });
+          const completionScore = driverTotalTrips > 0 ? Math.round((driverCompletedTrips / driverTotalTrips) * 60) : 0;
+
+          const openComplaints = await this.databaseService.repositories.reportModel.countDocuments({ driverId: van.driverId.toString(), status: { $in: ['pending', 'open'] }, createdAt: { $gte: ninetyDaysAgo } });
+          const complaintScore = Math.max(0, 40 - openComplaints * 10);
+
+          driverInfo = {
+            id: driver._id,
+            fullname: driver.fullname,
+            rating: completionScore + complaintScore,
+            tripCompletionRate: driverTotalTrips > 0 ? Math.round((driverCompletedTrips / driverTotalTrips) * 100) : null,
+            openComplaints,
+          };
+        }
+      }
+
+      results.push({
+        id: van._id,
+        carNumber: van.carNumber,
+        vehicleType: van.vehicleType,
+        status: van.status,
+        healthScore,
+        healthBreakdown: { docScore: Math.round(docScore), gpsScore, driverScore, tripScore },
+        docIssues,
+        gpsEnabled,
+        lastPingAt,
+        insuranceExpiry: van.insuranceExpiry,
+        registrationExpiry: van.registrationExpiry,
+        fitnessExpiry: van.fitnessExpiry,
+        driver: driverInfo,
+      });
+    }
+
+    const avgHealth = results.length > 0 ? Math.round(sumHealth / results.length) : 0;
+
+    return {
+      message: 'Fleet overview fetched successfully',
+      data: results,
+      stats: {
+        totalFleet: total,
+        activeCount,
+        avgHealth,
+        criticalCount,
+        docIssueCount,
+        gpsEnabledCount,
+        driverAssignedCount,
+      },
+      pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
   }
 
 }

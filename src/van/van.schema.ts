@@ -57,6 +57,26 @@ status: string;
 @Prop({ type: Boolean, default: false })
 ownVan: boolean;
 
+// Fleet compliance dates — used for Fleet Health Score
+@Prop({ type: Date, required: false })
+insuranceExpiry?: Date;
+@Prop({ type: Date, required: false })
+registrationExpiry?: Date;
+@Prop({ type: Date, required: false })
+fitnessExpiry?: Date;
+@Prop({ type: Date, required: false })
+routePermitExpiry?: Date;
+
+// Document Vault — file URLs (Cloudinary/S3), not OCR'd yet
+@Prop({ required: false })
+insuranceDocUrl?: string;
+@Prop({ required: false })
+registrationDocUrl?: string;
+@Prop({ required: false })
+fitnessDocUrl?: string;
+@Prop({ required: false })
+routePermitDocUrl?: string;
+
 };
 
 

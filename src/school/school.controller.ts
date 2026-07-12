@@ -49,7 +49,7 @@ export class SchoolController {
     if (req.user.role !== 'superadmin') {
       throw new UnauthorizedException('Only superadmins can access this API');
     }
-    return this.schoolService.changeSchoolStatusByAdmin(body.schoolId, body.status);
+    return this.schoolService.changeSchoolStatusByAdmin(body.schoolId, body.status, req.user);
   }
 
   @Post('register-interest')

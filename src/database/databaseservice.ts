@@ -40,6 +40,10 @@ export class DatabaseService {
 
       @InjectModel(schema.Support.name) 
     private SupportModel: Model<schema.SupportDocument>,
+      @InjectModel(schema.Employee.name)
+    private EmployeeModel: Model<schema.EmployeeDocument>,
+      @InjectModel(schema.AuditLog.name)
+    private AuditLogModel: Model<schema.AuditLogDocument>,
      ) {}
      get repositories() {
     return {
@@ -56,7 +60,9 @@ export class DatabaseService {
       routeModel: this.routeModel,
       invoiceModel: this.invoiceModel,
       PromotionBannerModel: this.PromotionBannerModel,
-      supportModel: this.SupportModel
+      supportModel: this.SupportModel,
+      employeeModel: this.EmployeeModel,
+      auditLogModel: this.AuditLogModel
         };
   }
 }

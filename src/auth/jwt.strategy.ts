@@ -19,7 +19,8 @@ async validate(payload: any) {
     userId: payload.sub,
     email: payload.email,
     userType: payload.userType || null, // for driver/parent
-    role: payload.role || null,         // for admin/superadmin
+    role: payload.role || null,         // for admin/superadmin/employee
+    permissions: payload.permissions || [], // for employee
   };
 }
 }

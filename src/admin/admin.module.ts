@@ -8,6 +8,8 @@ import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { OtpModule } from 'src/user/schema/otp/otp.module';
 import { KidModule } from 'src/Kid/kid.module';
+import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
+import { FirebaseAdminModule } from 'src/notification/firebase.module';
 
 
 
@@ -17,6 +19,8 @@ import { KidModule } from 'src/Kid/kid.module';
      OtpModule,
     ConfigModule,
     KidModule,
+    WhatsappModule,
+    FirebaseAdminModule,
 
     
     PassportModule,

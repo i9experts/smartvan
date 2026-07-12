@@ -47,6 +47,13 @@ export class Report {
 
   @Prop({ required: false })
   dateOfIncident?: Date;
+
+  @Prop({ type: String, required: false })
+  assignedTo?: string;
+  @Prop({ type: Date, required: false })
+  assignedAt?: Date;
+  @Prop({ type: Date, required: false })
+  resolvedAt?: Date;
 }
 
 
