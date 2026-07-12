@@ -861,9 +861,9 @@ async getKids(AdminId: string, query: any) {
   const carNumber =
     typeof query.carNumber === "string" ? query.carNumber.trim() : "";
 
-  // grade string me ayega query se
+  // grade is a free-text string (e.g. "Grade 3", "Nursery", "O-Level")
   const grade =
-    typeof query.grade === "string" ? Number(query.grade) : null;
+    typeof query.grade === "string" && query.grade.trim() ? query.grade.trim() : null;
 
   const skip = (page - 1) * limit;
 
@@ -960,9 +960,9 @@ async getKids(AdminId: string, query: any) {
   }
 
   // grade filter
-  if (grade !== null && !isNaN(grade)) {
+  if (grade !== null) {
     andFilters.push({
-      grade: grade,
+      grade: { $regex: grade, $options: "i" },
     });
   }
 
@@ -1080,7 +1080,7 @@ async getKidsBySuperAdmin(SuperAdminId: string, query: any) {
     typeof query.schoolId === "string" ? query.schoolId.trim() : "";
 
   const grade =
-    typeof query.grade === "string" ? Number(query.grade) : null;
+    typeof query.grade === "string" && query.grade.trim() ? query.grade.trim() : null;
 
   const skip = (page - 1) * limit;
 
@@ -1167,8 +1167,8 @@ async getKidsBySuperAdmin(SuperAdminId: string, query: any) {
     });
   }
 
-  if (grade !== null && !isNaN(grade)) {
-    andFilters.push({ grade: grade });
+  if (grade !== null) {
+    andFilters.push({ grade: { $regex: grade, $options: "i" } });
   }
 
   if (andFilters.length) {

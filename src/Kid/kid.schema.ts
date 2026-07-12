@@ -26,7 +26,7 @@ fullname: string;
 gender: string;
 
 @Prop({ required: false })
-grade: number;
+grade: string;
 
 @Prop({ required: false, default: "" })
 image: string;

@@ -70,7 +70,15 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
     parentId: Parent._id,
   });
 
-  const savedKid = await newKid.save();
+  let savedKid;
+  try {
+    savedKid = await newKid.save();
+  } catch (err) {
+    if (err.name === 'ValidationError') {
+      throw new BadRequestException(err.message);
+    }
+    throw err;
+  }
 
   // Step 5b: Notify the school (via WhatsApp) that a new student is
   // pending verification — fire-and-forget, never blocks kid creation.
