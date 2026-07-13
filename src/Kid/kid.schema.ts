@@ -43,6 +43,15 @@ age: number;
 
 @Prop({ required: false })
 dob: Date;
+
+@Prop({ required: false, default: "" })
+homeAddress: string;
+
+@Prop({ required: false })
+homeLat: number;
+
+@Prop({ required: false })
+homeLng: number;
 }
 
 

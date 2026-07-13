@@ -97,8 +97,13 @@ export class WhatsappService {
   }
 
   async sendLoginCredentials(to: string, parentName: string, email: string, password: string, schoolName: string): Promise<any> {
-    const message = `Dear ${parentName},\n\nWelcome to *${schoolName}* transport system powered by SmartVan! 🚐\n\nYour login credentials:\n📧 Email: *${email}*\n🔑 Password: *${password}*\n\nDownload SmartVan app to track your child's journey in real-time.\n\n_Safe Ride, Every Side_ 🌟`;
-    return this.sendTextMessage(to, message);
+    // IMPORTANT: WhatsApp Business API only allows free-form text messages
+    // within 24h of the *customer* messaging first. A newly-added driver
+    // has never messaged our number, so a plain sendTextMessage here gets
+    // silently rejected by Meta. We reuse the only currently-approved
+    // template (smartvan_alert) instead, which works for any recipient.
+    const message = `Welcome to ${schoolName} on SmartVan! Your login details — ID: ${email}, Password: ${password}. Download the SmartVan app to get started.`;
+    return this.sendTemplateMessage(to, parentName, message);
   }
 
   async sendTripAlert(to: string, parentName: string, studentName: string, status: 'picked' | 'dropped', time: string): Promise<any> {

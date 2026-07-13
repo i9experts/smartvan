@@ -10,6 +10,8 @@ import { OtpModule } from 'src/user/schema/otp/otp.module';
 import { KidModule } from 'src/Kid/kid.module';
 import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
 import { FirebaseAdminModule } from 'src/notification/firebase.module';
+import { BillingModule } from 'src/billing/billing.module';
+import { AuditLogModule } from 'src/audit-log/audit-log.module';
 
 
 
@@ -21,6 +23,8 @@ import { FirebaseAdminModule } from 'src/notification/firebase.module';
     KidModule,
     WhatsappModule,
     FirebaseAdminModule,
+    BillingModule,
+    AuditLogModule,
 
     
     PassportModule,

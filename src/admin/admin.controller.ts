@@ -66,6 +66,15 @@ async getSchoolById(@Param('id') id: string) {
 }
 
 @UseGuards(AuthGuard('jwt'))
+@Get('GetSuperAdminOverview')
+async getSuperAdminOverview(@Req() req: any) {
+  if (!req.user || req.user.role !== 'superadmin') {
+    throw new UnauthorizedException('Only superadmins can access this API');
+  }
+  return this.adminService.getSuperAdminOverview();
+}
+
+@UseGuards(AuthGuard('jwt'))
 @Get('getAllSchoolsBySuperAdmin')
 async getAllSchoolsBySuperAdmin(
   @Req() req: any,

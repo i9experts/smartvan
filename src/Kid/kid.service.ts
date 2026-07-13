@@ -134,9 +134,11 @@ private async notifySchoolOfNewStudent(schoolId: string, parent: any, kid: any) 
   const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
   if (!school || !school.contactNumber) return;
 
-  const message = `New student pending verification 🎒\n\nStudent: ${kid.fullname || 'N/A'}\nParent: ${parent.fullname || parent.email}\nContact: ${parent.phoneNo || parent.email}\n\nPlease review and verify this student in your SmartVan admin dashboard.`;
+  const message = `New student pending verification 🎒 Student: ${kid.fullname || 'N/A'}, Parent: ${parent.fullname || parent.email} (${parent.phoneNo || parent.email}). Please review and verify in your SmartVan admin dashboard.`;
 
   if (school.waConnected && school.waPhoneNumberId && school.waAccessToken) {
+    // Uses the school's own WABA — only works reliably if the school has
+    // messaged that number within 24h, or has its own approved templates.
     await this.whatsappService.sendWithSchoolCredentials(
       school.waPhoneNumberId,
       school.waAccessToken,
@@ -144,7 +146,9 @@ private async notifySchoolOfNewStudent(schoolId: string, parent: any, kid: any) 
       message,
     );
   } else {
-    await this.whatsappService.sendTextMessage(school.contactNumber, message);
+    // Platform default number — use the approved smartvan_alert template
+    // so this actually delivers regardless of prior session status.
+    await this.whatsappService.sendTemplateMessage(school.contactNumber, school.schoolName || 'Admin', message);
   }
 }
 
@@ -718,14 +722,12 @@ const driver = await this.databaseService.repositories.driverModel.findOne({
 
 
 
-  if (driver.status !== "active") {
-    throw new BadRequestException('Driver is not active');
-  }
-
-  
-
   if (!driver) {
     throw new BadRequestException('Driver not found in this school');
+  }
+
+  if (driver.status !== "active") {
+    throw new BadRequestException('Driver is not active');
   }
 
   const existingVan = await this.databaseService.repositories.VanModel.findOne({
@@ -910,7 +912,10 @@ async verifyStudentsByAdmin(
             message,
           );
         } else {
-          await this.whatsappService.sendTextMessage(parent.phoneNo, message);
+          // Platform default number — use the approved smartvan_alert
+          // template so this delivers even if the parent has never
+          // messaged our WhatsApp number before.
+          await this.whatsappService.sendTemplateMessage(parent.phoneNo, parent.fullname || 'Parent', message);
         }
       } catch (err) {
         console.error('Parent verification WhatsApp send failed:', err?.message || err);

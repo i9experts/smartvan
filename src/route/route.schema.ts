@@ -54,20 +54,22 @@ export class Route {
     type: {
       lat: { type: Number, required: true },
       long: { type: Number, required: true },
+      address: { type: String, required: false },
     },
     required: false,
   })
-  startPoint?: { lat: number; long: number };
+  startPoint?: { lat: number; long: number; address?: string };
 
   // Route ending point
   @Prop({
     type: {
       lat: { type: Number, required: true },
       long: { type: Number, required: true },
+      address: { type: String, required: false },
     },
     required: false,
   })
-  endPoint?: { lat: number; long: number };
+  endPoint?: { lat: number; long: number; address?: string };
 
   // Kids ke pickup/drop points (kidId + lat/long)
   @Prop({

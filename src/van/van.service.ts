@@ -1317,7 +1317,27 @@ async getAllDriversByAdmin(
     .find(query)
     .skip(skip)
     .limit(limit)
-    .select('fullname email phoneNo status fcmToken image schoolId');
+    .select('fullname email phoneNo NIC status fcmToken image schoolId lastLoginAt isVerified createdAt')
+    .lean();
+
+  // 3b️⃣ Look up each driver's assigned van (if any) — driverModel has no
+  // direct reference to Van, the link lives on the Van side (driverId).
+  const driverIds = drivers.map((d: any) => d._id);
+  const vans = await this.databaseService.repositories.VanModel
+    .find({ driverId: { $in: driverIds } })
+    .select('carNumber vehicleType driverId')
+    .lean();
+  const vanByDriverId: Record<string, any> = {};
+  vans.forEach((v: any) => {
+    if (v.driverId) vanByDriverId[v.driverId.toString()] = v;
+  });
+  const driversWithVan = drivers.map((d: any) => {
+    const van = vanByDriverId[d._id.toString()];
+    return {
+      ...d,
+      van: van ? { _id: van._id, carNumber: van.carNumber, vehicleType: van.vehicleType } : null,
+    };
+  });
 
   // 4️⃣ Total count
   const total = await this.databaseService.repositories.driverModel.countDocuments(
@@ -1327,7 +1347,7 @@ async getAllDriversByAdmin(
   // 5️⃣ Return response
   return {
     message: 'Drivers fetched successfully',
-    data: drivers,
+    data: driversWithVan,
     pagination: {
       total,
       page,
@@ -1412,7 +1432,7 @@ async getDriverById(driverId: string) {
 
     const driver = await this.databaseService.repositories.driverModel.create({
       fullname,
-      email: email || '',
+      ...(email ? { email } : {}),
       phoneNo: phoneNo || '',
       alternatePhoneNo: body.alternatePhoneNo || '',
       password: hashedPassword,

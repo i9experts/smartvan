@@ -659,6 +659,12 @@ async editRoute(adminId: string, routeId: string, dto: CreateRouteDto) {
     }
   }
 
+  // Student stops — this was previously missing entirely, meaning any
+  // stops added/reordered while editing a route were silently dropped.
+  if (dto.kidLocations !== undefined) {
+    updateData.kidLocations = dto.kidLocations;
+  }
+
   // Step 4: Perform partial update safely
   const updatedRoute = await this.databaseService.repositories.routeModel.findByIdAndUpdate(
     routeId,

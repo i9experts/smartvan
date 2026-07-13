@@ -155,6 +155,10 @@ async loginUser(loginData: any) {
   throw new UnauthorizedException('Account not verified. Please verify OTP first');
 }
 
+    // Track when this user last actually logged in — used by the admin
+    // panel to show whether a driver/parent has connected to the app yet.
+    user.lastLoginAt = new Date();
+    await user.save();
 
         if (fcmToken) {
       if (!user.fcmToken) {
@@ -336,8 +340,9 @@ async getProfile(userId: string, userType: string) {
     }
 
     let schoolName = null; // 👈 default null
+    let vanDetails = null;
 
-    // ✅ 3. Only for driver → fetch school
+    // ✅ 3. Only for driver → fetch school + assigned van
     if (userType === 'driver') {
       if (user.schoolId) {
         const school = await this.databaseService.repositories.SchoolModel.findById(user.schoolId);
@@ -345,6 +350,15 @@ async getProfile(userId: string, userType: string) {
         if (school) {
           schoolName = school.schoolName; // 👈 field name check kar lena
         }
+      }
+
+      const van = await this.databaseService.repositories.VanModel.findOne({ driverId: user._id });
+      if (van) {
+        vanDetails = {
+          vanModel: (van as any).vehicleType || null,
+          plateNumber: (van as any).carNumber || null,
+          seats: (van as any).venCapacity || null,
+        };
       }
     }
 
@@ -354,6 +368,7 @@ async getProfile(userId: string, userType: string) {
       data: {
         ...user.toObject(), // 👈 mongoose doc → plain object
         schoolName,         // 👈 add extra field
+        ...(vanDetails || {}),
       },
     };
   } catch (error) {

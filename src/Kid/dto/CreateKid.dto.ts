@@ -45,4 +45,16 @@ export class CreateKidDto {
   @IsOptional()
   @IsDate()
   dob?: Date;
+
+  @IsOptional()
+  @IsString()
+  homeAddress?: string;
+
+  @IsOptional()
+  @IsNumber()
+  homeLat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  homeLng?: number;
 }
