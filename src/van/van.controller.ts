@@ -7,14 +7,13 @@ import { CreateVanDto } from './dto/create-van.dto';
 import { CreateVanByAdminDto } from './dto/createVanByAdmin.dto';
 import { EditVanByAdminDto } from './dto/editVanByAdmin.dto';
 import { EditDriverDto } from './dto/editDriver.dto';
-import { ComplianceService } from '../compliance/compliance.service';
 
 
 
 
 @Controller('van')
 export class VanController {
-  constructor(private readonly vanService: VanService, private readonly complianceService: ComplianceService) {}
+  constructor(private readonly vanService: VanService) {}
 
   @UseGuards(AuthGuard('jwt'))
   @Post('addVan')
@@ -91,22 +90,6 @@ async editVanByAdmin(
 console.log(AdminId)
   return this.vanService.editVanByAdmin(EditVanByAdminDto, AdminId);
 }
-  @UseGuards(AuthGuard('jwt'))
-  @Get('GetFleetOverview')
-  async getFleetOverview(
-    @Req() req: any,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    const adminId = req.user?.userId;
-    if (!adminId) {
-      throw new BadRequestException('Admin not found in token');
-    }
-    const pageNumber = page ? parseInt(page) : 1;
-    const limitNumber = limit ? parseInt(limit) : 100;
-    return this.vanService.getFleetOverview(adminId, pageNumber, limitNumber);
-  }
-
   @UseGuards(AuthGuard('jwt'))
   @Get('GetVansByAdmin')
   async GetVansByAdmin(
@@ -204,6 +187,19 @@ async changeVanStatus(
 @Post('addDriverByAdmin')
 async addDriverByAdmin(@Req() req: any, @Body() body: any) {
   return this.vanService.addDriverByAdmin(req.user.userId, body);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Post('resetDriverPassword')
+async resetDriverPassword(
+  @Req() req: any,
+  @Body() body: { driverId: string; newPassword?: string },
+) {
+  return this.vanService.resetDriverPassword(
+    req.user.userId,
+    body.driverId,
+    body.newPassword,
+  );
 }
 
 @UseGuards(AuthGuard('jwt'))

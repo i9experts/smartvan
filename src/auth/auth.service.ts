@@ -114,13 +114,24 @@ async registerUser(registerDto: RegisterDto) {
 
 async loginUser(loginData: any) {
   try {
-    const { userType, email, password, fcmToken} = loginData;
+    const { userType, email, loginId, password, fcmToken} = loginData;
 
     console.log("llllllllllll", loginData)
 
     const userModel = this.getUserModel(userType);
 
-    const user = await userModel.findOne({ email });
+    // Accept login via email, phone number, or CNIC (NIC) — drivers in
+    // particular often can't manage email/OTP, so phone/CNIC + a
+    // password set by the admin is the practical login path for them.
+    const identifier = (email || loginId || '').toString().trim();
+
+    const user = await userModel.findOne({
+      $or: [
+        { email: identifier },
+        { phoneNo: identifier },
+        { NIC: identifier },
+      ],
+    });
    if (!user) {
   throw new UnauthorizedException({
     message: 'logiin failed',
