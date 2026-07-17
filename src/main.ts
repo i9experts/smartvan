@@ -3,20 +3,12 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import * as cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-
-
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-
-  
-
-
   app.use(cookieParser());
-
-
   const config = new DocumentBuilder()
-    .setTitle('Qchicken API')
-    .setDescription('Qchicken API')
+    .setTitle('SmartVan API')
+    .setDescription('SmartVan API')
     .addBearerAuth(
       {
         in: 'Header',
@@ -29,21 +21,9 @@ async function bootstrap() {
     )
     .build();
 
-  const whitelist = [
-    'http://localhost:3000',
-    'https://smartvanride.com',
-    'https://smart-ven.vercel.app'
-    
-  ];
-
   app.enableCors({
-    origin: (origin, cb) => {
-    
-      if (!origin) return cb(null, true);
-      if (whitelist.includes(origin)) return cb(null, true);
-      return cb(new Error('Not allowed by CORS'), false);
-    },
-    credentials: true, // << required if withCredentials on client
+    origin: true,
+    credentials: true,
     methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
     allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin'],
     exposedHeaders: ['Content-Length','X-Request-Id'],
@@ -55,8 +35,10 @@ async function bootstrap() {
       persistAuthorization: true,
     },
   });
-
-  await app.listen(3002, '0.0.0.0');
-  console.log('Server running on http://localhost:3002');
+  // Railway (and most PaaS hosts) assign the port dynamically via process.env.PORT.
+  // Falls back to 3002 for local/VPS dev where nothing sets PORT.
+  const port = process.env.PORT ? Number(process.env.PORT) : 3002;
+  await app.listen(port, '0.0.0.0');
+  console.log(`Server running on http://0.0.0.0:${port}`);
 }
 bootstrap();
