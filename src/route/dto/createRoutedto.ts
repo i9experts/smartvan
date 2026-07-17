@@ -40,6 +40,7 @@ export class CreateRouteDto {
   startPoint?: {
     lat?: number;
     long?: number;
+    address?: string;
   };
 
   @IsOptional()
@@ -47,5 +48,9 @@ export class CreateRouteDto {
   endPoint?: {
     lat?: number;
     long?: number;
+    address?: string;
   };
+
+  @IsOptional()
+  kidLocations?: { kidId: string; lat: number; long: number }[];
 }

@@ -7,12 +7,14 @@ import * as moment from "moment-timezone"
 
 import { Types } from "mongoose";
 
-const TZ = "Asia/Karachi";
+const TZ = process.env.DEFAULT_TIMEZONE || "Asia/Karachi";
 
 
 
 import { CreateTripDto } from './dto/create-trip.dto';
 import { DatabaseService } from "src/database/databaseservice";
+import { EtaService } from './eta.service';
+import { GeofenceService, GeofenceZone } from './geofence.service';
 import { EndTripDto } from './dto/tripend.dto';
 import { getLocationDto } from './dto/getLocations';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
@@ -21,7 +23,9 @@ import { Kid } from 'src/Kid/kid.schema';
 export class TripService {
   constructor(
    private databaseService: DatabaseService,
-   private firebaseAdminService: FirebaseAdminService
+   private firebaseAdminService: FirebaseAdminService,
+   private readonly etaService: EtaService,
+   private readonly geofenceService: GeofenceService,
   ) {} 
 
 
@@ -1274,6 +1278,512 @@ async generateGraphData(
 }
 
 
+
+
+
+  async getTripsByDriver(driverId: string) {
+    try {
+      const { Types } = require('mongoose');
+      const driverObjectId = new Types.ObjectId(driverId);
+      const van = await this.databaseService.repositories.VanModel.findOne({
+        driverId: driverObjectId
+      }).lean();
+
+      if (!van) {
+        return { message: 'No van assigned', data: [] };
+      }
+
+      const trips = await this.databaseService.repositories.TripModel.find({
+        vanId: van._id.toString()
+      }).sort({ createdAt: -1 }).lean();
+
+      return { message: 'Trips fetched', data: trips };
+    } catch (e) {
+      return { message: 'Error fetching trips', data: [] };
+    }
+  }
+  // ─── ETA Engine ────────────────────────────────────────────────────────────
+
+  async getETA(tripId: string, driverLat: number, driverLng: number) {
+    const trip = await this.databaseService.repositories.TripModel.findById(tripId);
+    if (!trip) throw new Error('Trip not found');
+
+    const route = await this.databaseService.repositories.routeModel.findById(trip.routeId);
+    if (!route) throw new Error('Route not found');
+
+    const school = await this.databaseService.repositories.SchoolModel.findById(trip.schoolId);
+
+    const destinations: { name: string; lat: number; lng: number }[] = [];
+
+    if (trip.type === 'pick') {
+      // ETA to school
+      if (school?.lat && school?.long) {
+        destinations.push({
+          name: school.schoolName || 'School',
+          lat: school.lat,
+          lng: school.long,
+        });
+      }
+    } else {
+      // ETA to each pending kid home
+      const pendingKids = trip.kids.filter(k => k.status !== 'dropped');
+      if (route.kidLocations?.length) {
+        for (const kl of route.kidLocations) {
+          const isPending = pendingKids.some(k => k.kidId === kl.kidId.toString());
+          if (isPending) {
+            const kid = await this.databaseService.repositories.KidModel.findById(kl.kidId);
+            destinations.push({
+              name: kid?.fullname || 'Student',
+              lat: kl.lat,
+              lng: kl.long,
+            });
+          }
+        }
+      }
+    }
+
+    const etaResults = await this.etaService.calculateETA(driverLat, driverLng, destinations);
+
+    return {
+      message: 'ETA calculated successfully',
+      tripId,
+      tripType: trip.type,
+      driverLocation: { lat: driverLat, lng: driverLng },
+      eta: etaResults,
+    };
+  }
+
+  async updateLocationAndBroadcastETA(
+    driverId: string,
+    tripId: string,
+    lat: number,
+    lng: number,
+  ) {
+    // 1. Save location to trip
+    const trip = await this.databaseService.repositories.TripModel.findById(tripId);
+    if (!trip) throw new Error('Trip not found');
+
+    trip.locations.push({ lat, long: lng, time: new Date() });
+
+    // 2. Get previous geofence state from trip (stored as custom field)
+    const prevInsideZones: string[] = trip.insideZoneIds || [];
+
+    // 3. Build zones list
+    const zones: GeofenceZone[] = [];
+    const school = await this.databaseService.repositories.SchoolModel.findById(trip.schoolId);
+    if (school?.lat && school?.long) {
+      zones.push({
+        id: 'school_' + school._id.toString(),
+        name: school.schoolName || 'School',
+        lat: school.lat,
+        lng: school.long,
+        radiusMeters: 150,
+        type: 'school',
+      });
+    }
+
+    // Home zones for pending kids
+    const route = await this.databaseService.repositories.routeModel.findById(trip.routeId);
+    const pendingKids = trip.kids.filter(k => k.status !== 'dropped');
+
+    if (route?.kidLocations?.length) {
+      for (const kl of route.kidLocations) {
+        const isPending = pendingKids.some(k => k.kidId === kl.kidId.toString());
+        if (!isPending) continue;
+
+        const kid = await this.databaseService.repositories.KidModel.findById(kl.kidId);
+        if (!kid?.parentId) continue;
+
+        const parent = await this.databaseService.repositories.parentModel.findOne({
+          _id: kid.parentId, isDelete: false,
+        });
+
+        zones.push({
+          id: 'home_' + kl.kidId.toString(),
+          name: kid.fullname || 'Student Home',
+          lat: kl.lat,
+          lng: kl.long,
+          radiusMeters: 100,
+          type: 'home',
+          kidId: kl.kidId.toString(),
+          parentId: kid.parentId.toString(),
+          parentFcmToken: parent?.fcmToken || undefined,
+        });
+      }
+    }
+
+    // 4. Check geofence zones
+    const { events, nowInsideZoneIds } = this.geofenceService.checkZones(
+      lat, lng, zones, prevInsideZones,
+    );
+
+    // 5. Save current zone state
+    trip.insideZoneIds = nowInsideZoneIds;
+    await trip.save();
+
+    // 6. Process geofence events — send FCM + save notifications
+    for (const evt of events) {
+      let title = '';
+      let body = '';
+      let actionType = '';
+
+      if (evt.zoneType === 'school' && evt.event === 'entered') {
+        title = 'Van reached school';
+        body = 'The van has arrived at school.';
+        actionType = 'GEOFENCE_SCHOOL_ENTERED';
+      } else if (evt.zoneType === 'school' && evt.event === 'exited') {
+        title = 'Van left school';
+        body = 'The van has departed from school.';
+        actionType = 'GEOFENCE_SCHOOL_EXITED';
+      } else if (evt.zoneType === 'home' && evt.event === 'entered') {
+        title = 'Van is nearby!';
+        body = evt.zoneName + ' — van is arriving at your location.';
+        actionType = 'GEOFENCE_HOME_ENTERED';
+      } else if (evt.zoneType === 'home' && evt.event === 'exited') {
+        title = 'Van has left your area';
+        body = 'The van has moved away from your location.';
+        actionType = 'GEOFENCE_HOME_EXITED';
+      }
+
+      // Send FCM to parent
+      if (evt.parentFcmToken) {
+        try {
+          await this.firebaseAdminService.sendToDevice(evt.parentFcmToken, {
+            notification: { title, body },
+            data: {
+              tripId,
+              type: actionType,
+              zoneId: evt.zoneId,
+              zoneName: evt.zoneName,
+              kidId: evt.kidId || '',
+              driverLat: String(lat),
+              driverLng: String(lng),
+            },
+          });
+        } catch (e) {
+          console.error('Geofence FCM error:', e.message);
+        }
+      } else if (evt.zoneType === 'school') {
+        // School event — notify ALL parents of kids in this trip
+        for (const kidEntry of pendingKids) {
+          const kid = await this.databaseService.repositories.KidModel.findById(kidEntry.kidId);
+          if (!kid?.parentId) continue;
+          const parent = await this.databaseService.repositories.parentModel.findOne({
+            _id: kid.parentId, isDelete: false,
+          });
+          if (!parent?.fcmToken || parent.notificationToggle !== true) continue;
+          try {
+            await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+              notification: { title, body },
+              data: { tripId, type: actionType, driverLat: String(lat), driverLng: String(lng) },
+            });
+          } catch (e) {
+            console.error('School geofence FCM error:', e.message);
+          }
+          // Save notification per parent
+          await this.databaseService.repositories.notificationModel.create({
+            type: 'driver',
+            infoType: 'Geofence',
+            parentId: kid.parentId.toString(),
+            schoolId: trip.schoolId,
+            VanId: trip.vanId,
+            title,
+            message: body,
+            actionType,
+            status: 'sent',
+            date: new Date(),
+          });
+        }
+      }
+
+      // Save notification for home zone events
+      if (evt.zoneType === 'home' && evt.parentId) {
+        await this.databaseService.repositories.notificationModel.create({
+          type: 'driver',
+          infoType: 'Geofence',
+          parentId: evt.parentId,
+          schoolId: trip.schoolId,
+          VanId: trip.vanId,
+          title,
+          message: body,
+          actionType,
+          status: 'sent',
+          date: new Date(),
+        });
+      }
+    }
+
+    // 7. Calculate ETA
+    const etaData = await this.getETA(tripId, lat, lng);
+
+    // 8. ETA FCM to pending kids parents
+    for (const kidEntry of pendingKids) {
+      const kid = await this.databaseService.repositories.KidModel.findById(kidEntry.kidId);
+      if (!kid?.parentId) continue;
+      const parent = await this.databaseService.repositories.parentModel.findOne({
+        _id: kid.parentId, isDelete: false,
+      });
+      if (!parent?.fcmToken || parent.notificationToggle !== true) continue;
+      const firstEta = etaData.eta[0];
+      if (!firstEta || firstEta.durationSeconds === 0) continue;
+      const etaMins = Math.round(firstEta.durationSeconds / 60);
+      try {
+        await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+          notification: {
+            title: 'Van is on the way',
+            body: etaMins <= 1
+              ? 'Van is arriving now!'
+              : 'Van arriving in ' + etaMins + ' mins (' + firstEta.etaTime + ')',
+          },
+          data: {
+            tripId,
+            type: 'ETA_UPDATE',
+            etaMinutes: String(etaMins),
+            etaTime: firstEta.etaTime,
+            driverLat: String(lat),
+            driverLng: String(lng),
+          },
+        });
+      } catch (e) {
+        console.error('ETA FCM error:', e.message);
+      }
+    }
+
+    return {
+      message: 'Location updated, geofence checked, ETA broadcast',
+      location: { lat, lng },
+      geofenceEvents: events.map(e => ({
+        zone: e.zoneName,
+        type: e.zoneType,
+        event: e.event,
+        distanceMeters: e.distanceMeters,
+      })),
+      eta: etaData.eta,
+    };
+  }
+
+
+
+  // ─── Digital Attendance ─────────────────────────────────────────────────
+
+  async getDailyAttendance(
+    adminId: string,
+    adminRole: string,
+    date?: string,
+    vanId?: string,
+    schoolId?: string,
+  ) {
+    const targetDate = date ? new Date(date) : new Date();
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // Resolve schoolId
+    let resolvedSchoolId = schoolId;
+    if (adminRole === 'admin') {
+      const school = await this.databaseService.repositories.SchoolModel.findOne({
+        admin: new Types.ObjectId(adminId),
+      }).lean();
+      if (!school) throw new Error('School not found');
+      resolvedSchoolId = school._id.toString();
+    }
+
+    const matchCondition: any = {
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
+      status: 'end',
+    };
+    if (resolvedSchoolId) matchCondition.schoolId = resolvedSchoolId;
+    if (vanId) matchCondition.vanId = vanId;
+
+    const trips = await this.databaseService.repositories.TripModel
+      .find(matchCondition)
+      .lean();
+
+    if (!trips.length) {
+      return {
+        message: 'Attendance report generated',
+        date: targetDate.toISOString().split('T')[0],
+        totalStudents: 0,
+        present: 0,
+        absent: 0,
+        records: [],
+      };
+    }
+
+    // Collect all kidIds from all trips
+    const allKidEntries: any[] = [];
+    for (const trip of trips) {
+      for (const k of trip.kids || []) {
+        allKidEntries.push({
+          kidId: k.kidId,
+          status: k.status,
+          time: k.time,
+          lat: k.lat,
+          long: k.long,
+          tripId: trip._id.toString(),
+          tripType: trip.type,
+          vanId: trip.vanId,
+          schoolId: trip.schoolId,
+          tripStart: trip.tripStart?.startTime,
+          tripEnd: trip.tripEnd?.endTime,
+        });
+      }
+    }
+
+    // Get unique kidIds
+    const uniqueKidIds = [...new Set(allKidEntries.map(e => e.kidId))];
+
+    // Fetch kid details
+    const kids = await this.databaseService.repositories.KidModel.find({
+      _id: { $in: uniqueKidIds.map(id => new Types.ObjectId(id)) },
+    }).lean();
+
+    const kidMap = new Map(kids.map((k: any) => [k._id.toString(), k]));
+
+    // Fetch van details
+    const vanIds = [...new Set(trips.map(t => t.vanId))];
+    const vans = await this.databaseService.repositories.VanModel.find({
+      _id: { $in: vanIds.map(id => new Types.ObjectId(id)) },
+    }).lean();
+    const vanMap = new Map(vans.map((v: any) => [v._id.toString(), v]));
+
+    // Build attendance records per kid
+    const records = uniqueKidIds.map(kidId => {
+      const kid: any = kidMap.get(kidId);
+      const entries = allKidEntries.filter(e => e.kidId === kidId);
+      const pickEntry = entries.find(e => e.tripType === 'pick');
+      const dropEntry = entries.find(e => e.tripType === 'drop');
+      const van: any = vanMap.get(entries[0]?.vanId);
+
+      // Determine attendance status
+      let attendanceStatus = 'present';
+      let remarks = '';
+
+      if (!pickEntry && !dropEntry) {
+        attendanceStatus = 'absent';
+        remarks = 'No trip record found';
+      } else if (pickEntry?.status === 'picked' || dropEntry?.status === 'dropped') {
+        attendanceStatus = 'present';
+        // Check if late — picked more than 15 mins after trip start
+        if (pickEntry?.time && pickEntry?.tripStart) {
+          const pickTime = new Date(pickEntry.time).getTime();
+          const startTime = new Date(pickEntry.tripStart).getTime();
+          const diffMins = (pickTime - startTime) / 60000;
+          if (diffMins > 15) {
+            attendanceStatus = 'late';
+            remarks = 'Picked ' + Math.round(diffMins) + ' mins after trip start';
+          }
+        }
+      }
+
+      return {
+        kidId,
+        fullname: kid?.fullname || 'Unknown',
+        image: kid?.image || null,
+        schoolId: entries[0]?.schoolId,
+        vanNumber: van?.carNumber || 'N/A',
+        attendanceStatus,
+        remarks,
+        pickupTime: pickEntry?.time || null,
+        pickupLat: pickEntry?.lat || null,
+        pickupLng: pickEntry?.long || null,
+        dropTime: dropEntry?.time || null,
+        dropLat: dropEntry?.lat || null,
+        dropLng: dropEntry?.long || null,
+        tripId: entries[0]?.tripId,
+      };
+    });
+
+    const present = records.filter(r => r.attendanceStatus === 'present').length;
+    const late = records.filter(r => r.attendanceStatus === 'late').length;
+    const absent = records.filter(r => r.attendanceStatus === 'absent').length;
+
+    return {
+      message: 'Attendance report generated',
+      date: targetDate.toISOString().split('T')[0],
+      totalStudents: records.length,
+      present,
+      late,
+      absent,
+      presentRate: records.length > 0
+        ? Math.round(((present + late) / records.length) * 100)
+        : 0,
+      records,
+    };
+  }
+
+  async getStudentAttendanceHistory(
+    kidId: string,
+    startDate?: string,
+    endDate?: string,
+  ) {
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    start.setHours(0, 0, 0, 0);
+    const end = endDate ? new Date(endDate) : new Date();
+    end.setHours(23, 59, 59, 999);
+
+    const kid: any = await this.databaseService.repositories.KidModel.findById(kidId).lean();
+    if (!kid) throw new Error('Student not found');
+
+    const trips = await this.databaseService.repositories.TripModel.find({
+      'kids.kidId': kidId,
+      status: 'end',
+      createdAt: { $gte: start, $lte: end },
+    }).lean();
+
+    // Group by date
+    const byDate: Record<string, any> = {};
+
+    for (const trip of trips) {
+      const dateKey = new Date((trip as any).createdAt).toISOString().split('T')[0];
+      if (!byDate[dateKey]) byDate[dateKey] = { date: dateKey, trips: [] };
+
+      const kidEntry = (trip.kids || []).find((k: any) => k.kidId === kidId);
+      if (kidEntry) {
+        byDate[dateKey].trips.push({
+          tripId: trip._id.toString(),
+          tripType: trip.type,
+          status: kidEntry.status,
+          time: kidEntry.time,
+          vanId: trip.vanId,
+        });
+      }
+    }
+
+    const history = Object.values(byDate).map((day: any) => {
+      const hasPick = day.trips.some((t: any) => t.tripType === 'pick' && (t.status === 'picked' || t.status === 'dropped'));
+      const hasDrop = day.trips.some((t: any) => t.tripType === 'drop' && t.status === 'dropped');
+      return {
+        date: day.date,
+        attendanceStatus: hasPick || hasDrop ? 'present' : 'absent',
+        trips: day.trips,
+      };
+    }).sort((a: any, b: any) => b.date.localeCompare(a.date));
+
+    const totalDays = history.length;
+    const presentDays = history.filter((h: any) => h.attendanceStatus === 'present').length;
+
+    return {
+      message: 'Student attendance history',
+      kid: {
+        id: kidId,
+        fullname: kid.fullname,
+        image: kid.image,
+      },
+      period: {
+        from: start.toISOString().split('T')[0],
+        to: end.toISOString().split('T')[0],
+      },
+      summary: {
+        totalDays,
+        presentDays,
+        absentDays: totalDays - presentDays,
+        attendanceRate: totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 0,
+      },
+      history,
+    };
+  }
 
 
 }

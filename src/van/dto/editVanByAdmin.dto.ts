@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { IsOptional, IsString, IsNumber } from 'class-validator';
+import { IsOptional, IsString, IsNumber, IsDateString } from 'class-validator';
 
 export class EditVanByAdminDto {
   @IsString()
@@ -36,4 +36,30 @@ export class EditVanByAdminDto {
   @IsOptional()
   @IsString()
   assignRoute?: string;
+
+  @IsOptional()
+  @IsDateString()
+  insuranceExpiry?: string;
+  @IsOptional()
+  @IsDateString()
+  registrationExpiry?: string;
+  @IsOptional()
+  @IsDateString()
+  fitnessExpiry?: string;
+  @IsOptional()
+  @IsDateString()
+  routePermitExpiry?: string;
+
+  @IsOptional()
+  @IsString()
+  insuranceDocUrl?: string;
+  @IsOptional()
+  @IsString()
+  registrationDocUrl?: string;
+  @IsOptional()
+  @IsString()
+  fitnessDocUrl?: string;
+  @IsOptional()
+  @IsString()
+  routePermitDocUrl?: string;
 }

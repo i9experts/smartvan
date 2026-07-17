@@ -272,7 +272,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
                 },
               },
             },
-            { $project: { name: 1 } },
+            { $project: { schoolName: 1 } },
           ],
           as: "school",
         },
@@ -284,7 +284,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
         $project: {
           _id: 1,
           schoolId: 1,
-          schoolName: "$school.name",
+          schoolName: "$school.schoolName",
           issueType: 1,
           description: 1,
           image: 1,
@@ -359,6 +359,10 @@ async changeComplaintStatus(
   // ✅ Update status
   report.status = newStatus;
   report.adminRemarks = adminRemarks;
+
+  if ((newStatus === 'resolved' || newStatus === 'rejected') && !report.resolvedAt) {
+    report.resolvedAt = new Date();
+  }
 
   await report.save();
 

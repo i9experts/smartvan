@@ -14,7 +14,8 @@ import { AuthModule } from './auth/auth.module';
 import { VanModule } from './van/van.module';
 import { KidModule } from './Kid/kid.module';
 import {UploadModule} from "./upload/upload.module"
-import {SchholModule} from "./school/school.module"
+import {SchoolModule} from "./school/school.module"
+import { FeesModule } from "./fees/fees.module"
 import { FirebaseAdminModule } from './notification/firebase.module';
 import { ReportModule } from './report/report.module';
 import { TripModule } from './Trip/trip.module';
@@ -22,6 +23,14 @@ import { RouteModule } from './route/route.module';
 import { AlertModule } from './alert/alert.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { PromotionBannerModule } from './promotion-banner/promotion-banner.module';
+import { WhatsappModule } from './whatsapp/whatsapp.module';
+import { BillingModule } from './billing/billing.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { ComplianceModule } from './compliance/compliance.module';
+import { EmployeeModule } from './employee/employee.module';
+import { AuditLogModule } from './audit-log/audit-log.module';
+import { SearchModule } from './search/search.module';
+import { ContactController } from './admin/contact.controller';
 
 
 
@@ -39,7 +48,8 @@ import { PromotionBannerModule } from './promotion-banner/promotion-banner.modul
     VanModule,
     KidModule,
     UploadModule,
-    SchholModule,
+    SchoolModule,
+    FeesModule,
     FirebaseAdminModule,
     EventsModule,
     ReportModule,
@@ -47,11 +57,16 @@ import { PromotionBannerModule } from './promotion-banner/promotion-banner.modul
     RouteModule,
     AlertModule,
     InvoiceModule,
-    PromotionBannerModule
-    
-
+    PromotionBannerModule,
+    WhatsappModule,
+    BillingModule,
+    ScheduleModule.forRoot(),
+    ComplianceModule,
+    EmployeeModule,
+    AuditLogModule,
+    SearchModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, ContactController],
   providers: [AppService],
 })
 export class AppModule {}

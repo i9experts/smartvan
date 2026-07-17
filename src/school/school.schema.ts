@@ -94,8 +94,23 @@ export class School {
   contactNumber: string;
 
 
+  @Prop({ default: 'Asia/Karachi' })
+  timezone: string;
+
   @Prop({ default: 'active' })
   status: string;
+
+  // WhatsApp Business API
+  @Prop()
+  wabaId: string;
+  @Prop()
+  waPhoneNumberId: string;
+  @Prop()
+  waAccessToken: string;
+  @Prop()
+  waPhoneNumber: string;
+  @Prop({ default: false })
+  waConnected: boolean;
 
   @Prop({ type: Types.ObjectId, ref: 'Admin' })
   admin: Types.ObjectId;

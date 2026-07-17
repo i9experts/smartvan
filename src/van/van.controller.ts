@@ -184,6 +184,25 @@ async changeVanStatus(
 
 
 @UseGuards(AuthGuard('jwt'))
+@Post('addDriverByAdmin')
+async addDriverByAdmin(@Req() req: any, @Body() body: any) {
+  return this.vanService.addDriverByAdmin(req.user.userId, body);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Post('resetDriverPassword')
+async resetDriverPassword(
+  @Req() req: any,
+  @Body() body: { driverId: string; newPassword?: string },
+) {
+  return this.vanService.resetDriverPassword(
+    req.user.userId,
+    body.driverId,
+    body.newPassword,
+  );
+}
+
+@UseGuards(AuthGuard('jwt'))
 @Post('removeDriverFromVan')
 async removeDriverFromVan(
   @Req() req: any,

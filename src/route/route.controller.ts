@@ -70,6 +70,30 @@ async editRoute(
 }
 
 @UseGuards(AuthGuard('jwt'))
+@UseGuards(AuthGuard('jwt'))
+@Post('assignStudentToRoute')
+async assignStudentToRoute(@Req() req: any, @Body() body: { routeId: string; kidId: string; lat?: number; long?: number }) {
+  return this.routetService.assignStudentToRoute(req.user.userId, body.routeId, body.kidId, body.lat || 0, body.long || 0);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Post('removeStudentFromRoute')
+async removeStudentFromRoute(@Req() req: any, @Body() body: { routeId: string; kidId: string }) {
+  return this.routetService.removeStudentFromRoute(req.user.userId, body.routeId, body.kidId);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Get('student-routes/:kidId')
+async getStudentRoutes(@Req() req: any, @Param('kidId') kidId: string) {
+  return this.routetService.getStudentRoutes(req.user.userId, kidId);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Get('route-students/:routeId')
+async getRouteStudents(@Req() req: any, @Param('routeId') routeId: string) {
+  return this.routetService.getRouteStudents(req.user.userId, routeId);
+}
+
 @Post('deleteRouteByAdmin')
 async deleteRouteByAdmin(
   @Req() req: any,

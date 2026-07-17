@@ -4,6 +4,7 @@ import { DatabaseService } from "src/database/databaseservice";
 import { CreateVanDto } from './dto/create-van.dto';
 import { OtpService } from 'src/user/schema/otp/otp.service';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { EditVanByAdminDto } from './dto/editVanByAdmin.dto';
 import { CreateVanByAdminDto } from './dto/createVanByAdmin.dto';
 import { Types } from 'mongoose';
@@ -22,7 +23,8 @@ export class VanService {
    
     private databaseService: DatabaseService,
     private  OtpService:  OtpService,
-     private firebaseAdminService: FirebaseAdminService
+     private firebaseAdminService: FirebaseAdminService,
+     private whatsappService: WhatsappService
     
 
    
@@ -290,6 +292,8 @@ async getVansByAdmin(
           carNumber: { $ifNull: ['$carNumber', ''] },
           status: { $ifNull: ['$status', ''] },
           ownVan: { $ifNull: ['$ownVan', false] },
+          venCapacity: { $ifNull: ['$venCapacity', null] },
+          expiryDate: { $ifNull: ['$expiryDate', null] },
         },
 
         driver: {
@@ -600,8 +604,6 @@ async removeDriverFromVan(vanId: string , adminId: string) {
 
     const driver = await this.databaseService.repositories.driverModel.findOne({
     _id: driverId,
-    schoolId: school._id.toString(),
-    isDelete: false,
   });
 
     if (driver) {
@@ -1315,7 +1317,27 @@ async getAllDriversByAdmin(
     .find(query)
     .skip(skip)
     .limit(limit)
-    .select('fullname email phoneNo status fcmToken image schoolId');
+    .select('fullname email phoneNo NIC status fcmToken image schoolId lastLoginAt isVerified createdAt')
+    .lean();
+
+  // 3b️⃣ Look up each driver's assigned van (if any) — driverModel has no
+  // direct reference to Van, the link lives on the Van side (driverId).
+  const driverIds = drivers.map((d: any) => d._id);
+  const vans = await this.databaseService.repositories.VanModel
+    .find({ driverId: { $in: driverIds } })
+    .select('carNumber vehicleType driverId')
+    .lean();
+  const vanByDriverId: Record<string, any> = {};
+  vans.forEach((v: any) => {
+    if (v.driverId) vanByDriverId[v.driverId.toString()] = v;
+  });
+  const driversWithVan = drivers.map((d: any) => {
+    const van = vanByDriverId[d._id.toString()];
+    return {
+      ...d,
+      van: van ? { _id: van._id, carNumber: van.carNumber, vehicleType: van.vehicleType } : null,
+    };
+  });
 
   // 4️⃣ Total count
   const total = await this.databaseService.repositories.driverModel.countDocuments(
@@ -1325,7 +1347,7 @@ async getAllDriversByAdmin(
   // 5️⃣ Return response
   return {
     message: 'Drivers fetched successfully',
-    data: drivers,
+    data: driversWithVan,
     pagination: {
       total,
       page,
@@ -1375,17 +1397,108 @@ async getDriverById(driverId: string) {
 }
 
 
+
+  async addDriverByAdmin(adminId: string, body: any) {
+    const { fullname, password } = body;
+    const email = body.email?.trim() || undefined;
+    const phoneNo = body.phoneNo?.trim() || undefined;
+    const NIC = body.NIC?.trim() || undefined;
+
+    if (!fullname) {
+      throw new BadRequestException('fullname is required');
+    }
+    if (!phoneNo && !NIC && !email) {
+      throw new BadRequestException('At least one of phoneNo, NIC, or email is required');
+    }
+
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: new Types.ObjectId(adminId) });
+    if (!school) throw new BadRequestException('School not found');
+
+    // Check for an existing driver matching whichever identifiers were given
+    const orConditions: any[] = [];
+    if (email) orConditions.push({ email });
+    if (phoneNo) orConditions.push({ phoneNo });
+    if (NIC) orConditions.push({ NIC });
+
+    const existing = await this.databaseService.repositories.driverModel.findOne({ $or: orConditions });
+    if (existing) throw new BadRequestException('A driver with this email, phone number, or CNIC already exists');
+
+    const bcrypt = require('bcrypt');
+    // Most drivers can't manage email/OTP verification — the admin sets
+    // (or we auto-generate) a password and hands it over directly via
+    // WhatsApp, skipping self-registration and OTP entirely.
+    const finalPassword = password || crypto.randomBytes(4).toString('hex');
+    const hashedPassword = await bcrypt.hash(finalPassword, 10);
+
+    const driver = await this.databaseService.repositories.driverModel.create({
+      fullname,
+      ...(email ? { email } : {}),
+      phoneNo: phoneNo || '',
+      alternatePhoneNo: body.alternatePhoneNo || '',
+      password: hashedPassword,
+      schoolId: school._id.toString(),
+      status: 'active',
+      userType: 'driver',
+      isVerified: true, // admin-created — no OTP verification needed
+      NIC: NIC || '',
+      address: body.address || '',
+      expiryDateLicense: body.expiryDateLicense || '',
+      expiryDateVehicleCard: body.expiryDateVehicleCard || '',
+    });
+
+    // Send login credentials via WhatsApp — this is the primary channel
+    // most drivers actually use and check.
+    if (phoneNo) {
+      this.whatsappService
+        .sendLoginCredentials(phoneNo, fullname, phoneNo, finalPassword, school.schoolName)
+        .catch((err) => console.error('Driver WhatsApp credentials send failed:', err?.message || err));
+    }
+
+    return {
+      message: 'Driver added successfully',
+      data: {
+        id: driver._id,
+        fullname: driver.fullname,
+        email: driver.email,
+        phoneNo: driver.phoneNo,
+        NIC: driver.NIC,
+        status: driver.status,
+        // Only returned so the admin can see/share it if WhatsApp send fails —
+        // not stored anywhere else in plaintext.
+        temporaryPassword: password ? undefined : finalPassword,
+      },
+    };
+  }
+
+  async resetDriverPassword(adminId: string, driverId: string, newPassword?: string) {
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: new Types.ObjectId(adminId) });
+    if (!school) throw new BadRequestException('School not found');
+
+    const driver = await this.databaseService.repositories.driverModel.findOne({
+      _id: driverId,
+      schoolId: school._id.toString(),
+    });
+    if (!driver) throw new BadRequestException('Driver not found in this school');
+
+    const bcrypt = require('bcrypt');
+    const finalPassword = newPassword || crypto.randomBytes(4).toString('hex');
+    driver.password = await bcrypt.hash(finalPassword, 10);
+    await driver.save();
+
+    if (driver.phoneNo) {
+      this.whatsappService
+        .sendLoginCredentials(driver.phoneNo, driver.fullname, driver.phoneNo, finalPassword, school.schoolName)
+        .catch((err) => console.error('Driver password-reset WhatsApp send failed:', err?.message || err));
+    }
+
+    return {
+      message: 'Password reset successfully',
+      data: {
+        id: driver._id,
+        phoneNo: driver.phoneNo,
+        temporaryPassword: newPassword ? undefined : finalPassword,
+      },
+    };
+  }
+
 }
-
-
-
-
-
-
-
-
-  
-
-  
-
-  

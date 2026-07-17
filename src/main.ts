@@ -20,7 +20,6 @@ async function bootstrap() {
       'accessToken',
     )
     .build();
-
   app.enableCors({
     origin: true,
     credentials: true,
@@ -28,7 +27,6 @@ async function bootstrap() {
     allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin'],
     exposedHeaders: ['Content-Length','X-Request-Id'],
   });
-
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, document, {
     swaggerOptions: {

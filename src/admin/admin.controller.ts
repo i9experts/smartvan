@@ -38,6 +38,12 @@ async createAdminAndSchool(@Req() req, @Body() body: any) {
 }
 
 @UseGuards(AuthGuard('jwt'))
+@Post('editSchoolProfile')
+async editSchoolProfile(@Req() req, @Body() body: any) {
+  const adminId = req.user.sub;
+  return this.adminService.editSchoolProfileByAdmin(adminId, body);
+}
+
 @Post('edit-admin-school')
 async editAdminAndSchool(@Req() req, @Body() body: any) {
   // ✅ Role check
@@ -57,6 +63,15 @@ async editAdminAndSchool(@Req() req, @Body() body: any) {
 @Get('getSchoolById/:id')
 async getSchoolById(@Param('id') id: string) {
   return this.adminService.getSchoolById(id);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Get('GetSuperAdminOverview')
+async getSuperAdminOverview(@Req() req: any) {
+  if (!req.user || req.user.role !== 'superadmin') {
+    throw new UnauthorizedException('Only superadmins can access this API');
+  }
+  return this.adminService.getSuperAdminOverview();
 }
 
 @UseGuards(AuthGuard('jwt'))
@@ -127,10 +142,11 @@ async getAllSchools() {
 async addKid(
   @Body() AddStudentDto : AddStudentDto , // sirf kid ke fields
   @Body('parentEmail') parentEmail: string, // alag se lo
+  @Body('parentPhone') parentPhone: string, // optional — enables WhatsApp for brand-new parents
   @Req() req: any,
 ) {
   const AdminId = req.user.userId;
-  return this.adminService.addKid(AddStudentDto , AdminId, parentEmail);
+  return this.adminService.addKid(AddStudentDto , AdminId, parentEmail, parentPhone);
 }
 
 @UseGuards(AuthGuard('jwt'))
@@ -347,5 +363,26 @@ async getAllDriversForSuperAdmin(
   );
 }
 
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('connectWhatsApp')
+  async connectWhatsApp(@Req() req: any, @Body() body: any) {
+    const adminId = req.user.userId;
+    return this.adminService.connectWhatsApp(adminId, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('disconnectWhatsApp')
+  async disconnectWhatsApp(@Req() req: any) {
+    const adminId = req.user.userId;
+    return this.adminService.disconnectWhatsApp(adminId);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('sendWhatsApp')
+  async sendWhatsApp(@Req() req: any, @Body() body: { to: string; message: string }) {
+    const adminId = req.user.userId;
+    return this.adminService.sendWhatsAppMessage(adminId, body.to, body.message);
+  }
 
 }

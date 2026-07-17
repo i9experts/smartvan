@@ -12,7 +12,7 @@ export class User {
  @Prop()
   fullname: string;
 
-  @Prop({ required: true, unique: true })
+  @Prop({ required: false, unique: true, sparse: true })
   email: string;
 
   @Prop({ required: false})
@@ -26,6 +26,9 @@ export class User {
 
   @Prop({ required: false  })
   NIC: string;
+
+  @Prop({ required: false, default: null })
+  lastLoginAt: Date;
 
   @Prop()
   alternatePhoneNo: string;

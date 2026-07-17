@@ -8,6 +8,10 @@ import * as crypto from 'crypto';
 import { AddStudentDto } from './dto/addStudent.dto';
 import { Types } from 'mongoose';
 import { EditStudentDto } from './dto/editStudent.dto';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
+import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
+import { BillingService } from 'src/billing/billing.service';
+import { AuditLogService } from 'src/audit-log/audit-log.service';
 
 import mongoose from 'mongoose';
 
@@ -21,7 +25,11 @@ export class AdminService {
     private databaseService: DatabaseService,
     private readonly otpService: OtpService, 
 
-    private readonly jwtService: JwtService
+    private readonly jwtService: JwtService,
+    private readonly whatsappService: WhatsappService,
+    private readonly firebaseAdminService: FirebaseAdminService,
+    private readonly billingService: BillingService,
+    private readonly auditLogService: AuditLogService
   ) {}
   
 async createAdminAndSchool(body: any) {
@@ -80,6 +88,26 @@ async createAdminAndSchool(body: any) {
   };
 }
 
+
+async editSchoolProfileByAdmin(adminId: string, body: any) {
+  const { schoolInfo, adminInfo } = body;
+  const admin = await this.databaseService.repositories.AdminModel.findById(adminId);
+  if (!admin) throw new NotFoundException('Admin not found');
+  const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminId });
+  if (!school) throw new NotFoundException('School not found');
+  if (adminInfo && Object.keys(adminInfo).length > 0) {
+    const updateFields: any = {};
+    if (adminInfo.name) updateFields.name = adminInfo.name;
+    await this.databaseService.repositories.AdminModel.updateOne({ _id: adminId }, { $set: updateFields });
+  }
+  if (schoolInfo && Object.keys(schoolInfo).length > 0) {
+    const allowedFields = ['schoolName', 'schoolEmail', 'contactPerson', 'contactNumber', 'address', 'branchName', 'startTime', 'endTime', 'maxTripDuration', 'bufferTime', 'currency', 'country', 'timezone'];
+    const filtered: any = {};
+    allowedFields.forEach(f => { if (schoolInfo[f] !== undefined) filtered[f] = schoolInfo[f]; });
+    await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: filtered });
+  }
+  return { message: 'Profile updated successfully' };
+}
 
 async editAdminAndSchool(body: any) {
   const { schoolId, adminInfo, schoolInfo } = body;
@@ -389,6 +417,13 @@ async loginAdmin(loginData: any) {
     { expiresIn: '30d' }
   );
 
+    this.auditLogService.record(
+      'logged in',
+      admin._id.toString(),
+      admin.email,
+      admin.role,
+    );
+
     return {
       message: 'Login successful',
       data: {
@@ -474,7 +509,7 @@ async getallschool() {
     data: updatedSchools,
   };
 }
-  async addKid(AddStudentDto: AddStudentDto, AdminId: string, parentEmail: string) {
+  async addKid(AddStudentDto: AddStudentDto, AdminId: string, parentEmail: string, parentPhone?: string) {
 
 const adminObjectId = new Types.ObjectId(AdminId);
 
@@ -488,9 +523,7 @@ const adminObjectId = new Types.ObjectId(AdminId);
  
   let parent = await this.databaseService.repositories.parentModel.findOne({ email: parentEmail });
 
-
-  
-
+  const isNewParent = !parent;
 
   if (!parent) {
     const username = parentEmail.split('@')[0];
@@ -508,8 +541,17 @@ const adminObjectId = new Types.ObjectId(AdminId);
       schoolId: school._id,
       password: hashedPassword,
       isVerified: true,
+      ...(parentPhone ? { phoneNo: parentPhone } : {}),
     });
     parent = await parent.save();
+
+    // Also send login credentials via WhatsApp if we have a phone number —
+    // fire-and-forget, never blocks account creation.
+    if (parentPhone) {
+      this.whatsappService
+        .sendLoginCredentials(parentPhone, username, parentEmail, randomPassword, school.schoolName)
+        .catch((err) => console.error('New parent WhatsApp send failed:', err?.message || err));
+    }
   }
 
 
@@ -521,12 +563,43 @@ const adminObjectId = new Types.ObjectId(AdminId);
 
   const savedKid = await newKid.save();
 
+  // Notify an EXISTING parent (WhatsApp + push) that a child was linked
+  // to their account — fire-and-forget.
+  if (!isNewParent) {
+    this.notifyExistingParentOfNewStudent(parent, savedKid, school).catch(
+      (err) => console.error('Existing parent notify failed:', err?.message || err),
+    );
+  }
+
   // Step 5: Return response
   return {
     message: 'Kid added successfully',
     data: savedKid,
   };
 }
+
+// Notifies an existing parent (WhatsApp + push) that the school linked a
+// new child to their account. Fire-and-forget — failures are logged only.
+private async notifyExistingParentOfNewStudent(parent: any, kid: any, school: any) {
+  if (parent.phoneNo) {
+    await this.whatsappService.sendParentWelcome(
+      parent.phoneNo,
+      parent.fullname,
+      kid.fullname || 'your child',
+      school.schoolName,
+    );
+  }
+
+  if (parent.fcmToken && parent.notificationToggle !== false) {
+    await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+      notification: {
+        title: 'Child Added',
+        body: `${kid.fullname || 'Your child'} has been added to ${school.schoolName} on SmartVan.`,
+      },
+    });
+  }
+}
+
 
 // async getKids(AdminId: string, query: any) {
 //   const adminObjectId = new Types.ObjectId(AdminId);
@@ -799,9 +872,9 @@ async getKids(AdminId: string, query: any) {
   const carNumber =
     typeof query.carNumber === "string" ? query.carNumber.trim() : "";
 
-  // grade string me ayega query se
+  // grade is a free-text string (e.g. "Grade 3", "Nursery", "O-Level")
   const grade =
-    typeof query.grade === "string" ? Number(query.grade) : null;
+    typeof query.grade === "string" && query.grade.trim() ? query.grade.trim() : null;
 
   const skip = (page - 1) * limit;
 
@@ -898,9 +971,9 @@ async getKids(AdminId: string, query: any) {
   }
 
   // grade filter
-  if (grade !== null && !isNaN(grade)) {
+  if (grade !== null) {
     andFilters.push({
-      grade: grade,
+      grade: { $regex: grade, $options: "i" },
     });
   }
 
@@ -933,6 +1006,10 @@ async getKids(AdminId: string, query: any) {
           status: { $ifNull: ["$status", ""] },
           age: { $ifNull: ["$age", null] },
           dob: { $ifNull: ["$dob", null] },
+          createdAt: "$createdAt",
+          homeAddress: { $ifNull: ["$homeAddress", ""] },
+          homeLat: { $ifNull: ["$homeLat", null] },
+          homeLng: { $ifNull: ["$homeLng", null] },
         },
         parent: {
           id: {
@@ -1018,7 +1095,7 @@ async getKidsBySuperAdmin(SuperAdminId: string, query: any) {
     typeof query.schoolId === "string" ? query.schoolId.trim() : "";
 
   const grade =
-    typeof query.grade === "string" ? Number(query.grade) : null;
+    typeof query.grade === "string" && query.grade.trim() ? query.grade.trim() : null;
 
   const skip = (page - 1) * limit;
 
@@ -1105,8 +1182,8 @@ async getKidsBySuperAdmin(SuperAdminId: string, query: any) {
     });
   }
 
-  if (grade !== null && !isNaN(grade)) {
-    andFilters.push({ grade: grade });
+  if (grade !== null) {
+    andFilters.push({ grade: { $regex: grade, $options: "i" } });
   }
 
   if (andFilters.length) {
@@ -1139,6 +1216,10 @@ async getKidsBySuperAdmin(SuperAdminId: string, query: any) {
           status: { $ifNull: ["$status", ""] },
           age: { $ifNull: ["$age", null] },
           dob: { $ifNull: ["$dob", null] },
+          createdAt: "$createdAt",
+          homeAddress: { $ifNull: ["$homeAddress", ""] },
+          homeLat: { $ifNull: ["$homeLat", null] },
+          homeLng: { $ifNull: ["$homeLng", null] },
         },
         parent: {
           id: {
@@ -1247,14 +1328,18 @@ async removeKids(AdminId: string, kidIds: string[]) {
     throw new UnauthorizedException('School not found');
   }
 
-  // Step 2: Update each kid whose schoolId matches
-  const result = await this.databaseService.repositories.KidModel.updateMany(
-    { _id: { $in: kidIds }, schoolId: school._id },
-    { $set: { schoolId: null, status: "inActive", } }
+  // Step 2: Actually delete the kids whose schoolId matches — the UI
+  // presents this as a permanent delete (trash icon), so it should behave
+  // like one. Previously this only ever ran an update with a broken
+  // ObjectId-vs-string comparison against schoolId, so it silently
+  // matched zero documents and never removed anything.
+  const result = await this.databaseService.repositories.KidModel.deleteMany(
+    { _id: { $in: kidIds }, schoolId: school._id.toString() },
   );
 
   return {
-    message: 'Kids remove from School successfully',
+    message: 'Kids removed successfully',
+    deletedCount: result.deletedCount,
   };
 }
 
@@ -1742,5 +1827,285 @@ async getAllDriversForSuperAdmin(
 }
 
 
+
+  async connectWhatsApp(adminId: string, body: { wabaId: string; waPhoneNumberId: string; waAccessToken: string; waPhoneNumber: string }) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new Error('School not found');
+
+    // Test the credentials by sending a test request
+    const axios = require('axios');
+    try {
+      await axios.get(`https://graph.facebook.com/v19.0/${body.waPhoneNumberId}`, {
+        headers: { Authorization: `Bearer ${body.waAccessToken}` }
+      });
+    } catch (e: any) {
+      throw new Error('Invalid WhatsApp credentials. Please check your Phone Number ID and Access Token.');
+    }
+
+    await this.databaseService.repositories.SchoolModel.updateOne(
+      { _id: school._id },
+      { $set: {
+        wabaId: body.wabaId,
+        waPhoneNumberId: body.waPhoneNumberId,
+        waAccessToken: body.waAccessToken,
+        waPhoneNumber: body.waPhoneNumber,
+        waConnected: true,
+      }}
+    );
+
+    return { message: 'WhatsApp connected successfully', waPhoneNumber: body.waPhoneNumber };
+  }
+
+  async disconnectWhatsApp(adminId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new Error('School not found');
+
+    await this.databaseService.repositories.SchoolModel.updateOne(
+      { _id: school._id },
+      { $set: { wabaId: null, waPhoneNumberId: null, waAccessToken: null, waPhoneNumber: null, waConnected: false } }
+    );
+
+    return { message: 'WhatsApp disconnected successfully' };
+  }
+
+  async sendWhatsAppMessage(adminId: string, to: string, message: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new Error('School not found');
+    if (!school.waConnected || !school.waPhoneNumberId || !school.waAccessToken) {
+      throw new Error('WhatsApp not connected. Please connect your WhatsApp number in Settings.');
+    }
+
+    const axios = require('axios');
+    let cleaned = to.replace(/[^0-9]/g, '');
+    if (cleaned.startsWith('0')) cleaned = '92' + cleaned.substring(1);
+    if (!cleaned.startsWith('92') && !cleaned.startsWith('971') && !cleaned.startsWith('966') && !cleaned.startsWith('974')) {
+      cleaned = '92' + cleaned;
+    }
+
+    const response = await axios.post(
+      `https://graph.facebook.com/v19.0/${school.waPhoneNumberId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: cleaned,
+        type: 'text',
+        text: { body: message },
+      },
+      { headers: { Authorization: `Bearer ${school.waAccessToken}`, 'Content-Type': 'application/json' } }
+    );
+
+    return { success: true, data: response.data };
+  }
+
+  // Cross-tenant platform overview for the Super Admin dashboard.
+  // NOTE: "complaints" has no real backend concept yet (no Complaint model
+  // exists — only a Support schema for contact links, which is unrelated).
+  // Returning honest zeros there rather than fabricating numbers.
+  async getSuperAdminOverview() {
+    const { SchoolModel, VanModel, driverModel, parentModel, TripModel } = this.databaseService.repositories;
+
+    const schools = await SchoolModel.find().lean();
+    const totalInstitutions = schools.length;
+    const activeInstitutions = schools.filter((s: any) => s.status === 'active').length;
+    const inactiveInstitutions = totalInstitutions - activeInstitutions;
+
+    const vans = await VanModel.find().lean();
+    const totalFleet = vans.length;
+    const activeFleet = vans.filter((v: any) => v.status === 'active').length;
+
+    // "GPS online" = van currently on an ongoing trip with a location
+    // update in the last 10 minutes. There's no persisted last-seen field
+    // on Van directly, so we derive it from live trip data.
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const ongoingTrips = await TripModel.find({ status: 'ongoing' }).lean();
+    const onlineVanIds = new Set<string>();
+    for (const trip of ongoingTrips as any[]) {
+      const locs = trip.locations || [];
+      const last = locs[locs.length - 1];
+      if (last?.time && new Date(last.time) >= tenMinAgo) {
+        onlineVanIds.add(trip.vanId);
+      }
+    }
+    const gpsOnline = onlineVanIds.size;
+    const gpsOffline = Math.max(activeFleet - gpsOnline, 0);
+    const avgHealth = activeFleet > 0 ? Math.round((gpsOnline / activeFleet) * 100) : 0;
+
+    const drivers = await driverModel.find().lean();
+    const totalDrivers = drivers.length;
+    const activeDrivers = drivers.filter((d: any) => d.status === 'active').length;
+
+    // App connection status — a user is "connected" once they've actually
+    // logged in at least once (lastLoginAt set), not just been created.
+    const parents = await parentModel.find().lean();
+    const totalParents = parents.length;
+    const connectedParents = (parents as any[]).filter((p) => !!p.lastLoginAt).length;
+    const connectedDrivers = (drivers as any[]).filter((d) => !!d.lastLoginAt).length;
+
+    const parentsBySchool: Record<string, any[]> = {};
+    (parents as any[]).forEach((p) => {
+      const sid = p.schoolId || 'unknown';
+      if (!parentsBySchool[sid]) parentsBySchool[sid] = [];
+      parentsBySchool[sid].push(p);
+    });
+    const driversBySchool: Record<string, any[]> = {};
+    (drivers as any[]).forEach((d) => {
+      const sid = d.schoolId || 'unknown';
+      if (!driversBySchool[sid]) driversBySchool[sid] = [];
+      driversBySchool[sid].push(d);
+    });
+
+    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
+    const todaysTrips = await TripModel.find({ createdAt: { $gte: startOfDay, $lte: endOfDay } }).lean();
+    const tripsToday = todaysTrips.length;
+    const completedToday = (todaysTrips as any[]).filter((t) => t.status === 'end').length;
+
+    const vansBySchool: Record<string, any[]> = {};
+    (vans as any[]).forEach((v) => {
+      const sid = v.schoolId || 'unknown';
+      if (!vansBySchool[sid]) vansBySchool[sid] = [];
+      vansBySchool[sid].push(v);
+    });
+
+    const appConnectionsBySchool = (schools as any[]).map((s) => {
+      const sid = s._id.toString();
+      const schoolParents = parentsBySchool[sid] || [];
+      const schoolDrivers = driversBySchool[sid] || [];
+      const connectedSchoolParents = schoolParents.filter((p) => !!p.lastLoginAt).length;
+      const connectedSchoolDrivers = schoolDrivers.filter((d) => !!d.lastLoginAt).length;
+      return {
+        schoolId: sid,
+        schoolName: s.schoolName,
+        parents: { total: schoolParents.length, connected: connectedSchoolParents },
+        drivers: { total: schoolDrivers.length, connected: connectedSchoolDrivers },
+      };
+    });
+
+    const snapshot = (schools as any[]).map((s) => {
+      const schoolVans = vansBySchool[s._id.toString()] || [];
+      const schoolOnline = schoolVans.filter((v) => onlineVanIds.has(v._id.toString())).length;
+      const avgH = schoolVans.length > 0 ? Math.round((schoolOnline / schoolVans.length) * 100) : null;
+      return {
+        schoolId: s._id.toString(),
+        schoolName: s.schoolName,
+        status: s.status,
+        totalVans: schoolVans.length,
+        avgHealth: avgH,
+      };
+    });
+
+    // Per-van pricing tiers (matches your actual Stripe price points)
+    const priceMap: Record<string, number> = {
+      car: 790, hiroof: 990, hiace: 990, bus: 1990, coach: 1990,
+    };
+    const vanPrice = (v: any) => priceMap[(v.vehicleType || '').toLowerCase()] ?? 990;
+
+    let billingSchools: any[] = [];
+    try {
+      billingSchools = await this.billingService.getAllSchoolsBilling();
+    } catch (err) {
+      console.error('getAllSchoolsBilling failed in overview:', err?.message || err);
+    }
+    const billingBySchoolId: Record<string, any> = {};
+    billingSchools.forEach((b: any) => { billingBySchoolId[b.schoolId.toString()] = b; });
+
+    let activeSubscriptions = 0, inactiveSubscriptions = 0, paymentFailed = 0, expiringSoon = 0;
+    let estimatedMonthlyRevenue = 0;
+    const revenueBySchool: any[] = [];
+    const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    for (const s of schools as any[]) {
+      const sid = s._id.toString();
+      const schoolVans = vansBySchool[sid] || [];
+      const monthlyRevenue = schoolVans.reduce((sum, v) => sum + vanPrice(v), 0);
+      const billing = billingBySchoolId[sid];
+
+      if (billing) {
+        if (billing.subscriptionStatus === 'active') {
+          activeSubscriptions++;
+          estimatedMonthlyRevenue += monthlyRevenue;
+          revenueBySchool.push({ schoolId: sid, schoolName: s.schoolName, totalVans: schoolVans.length, monthlyRevenue, currency: 'PKR' });
+        } else if (billing.subscriptionStatus === 'past_due') {
+          paymentFailed++;
+        } else {
+          inactiveSubscriptions++;
+        }
+
+        if (billing.currentPeriodEnd && new Date(billing.currentPeriodEnd) <= thirtyDaysFromNow) {
+          expiringSoon++;
+        }
+      } else {
+        inactiveSubscriptions++;
+      }
+    }
+
+    const averageRevenuePerSchool = activeSubscriptions > 0 ? Math.round(estimatedMonthlyRevenue / activeSubscriptions) : 0;
+    const totalActiveVans = revenueBySchool.reduce((sum, r) => sum + r.totalVans, 0);
+    const averageRevenuePerVehicle = totalActiveVans > 0 ? Math.round(estimatedMonthlyRevenue / totalActiveVans) : 0;
+
+    return {
+      message: 'Super admin overview fetched successfully',
+      data: {
+        institutions: {
+          total: totalInstitutions,
+          active: activeInstitutions,
+          inactive: inactiveInstitutions,
+          snapshot,
+        },
+        fleet: {
+          total: totalFleet,
+          active: activeFleet,
+          gpsOnline,
+          gpsOffline,
+          avgHealth,
+        },
+        drivers: {
+          total: totalDrivers,
+          active: activeDrivers,
+        },
+        // App connection status — who has actually logged into the mobile
+        // apps vs. just having an account created.
+        appConnections: {
+          parents: {
+            total: totalParents,
+            connected: connectedParents,
+            rate: totalParents > 0 ? Math.round((connectedParents / totalParents) * 100) : 0,
+          },
+          drivers: {
+            total: totalDrivers,
+            connected: connectedDrivers,
+            rate: totalDrivers > 0 ? Math.round((connectedDrivers / totalDrivers) * 100) : 0,
+          },
+          bySchool: appConnectionsBySchool,
+        },
+        trips: {
+          today: tripsToday,
+          completedToday,
+        },
+        // No Complaint model exists yet on the backend — see note above.
+        complaints: {
+          total: 0,
+          open: 0,
+          byCategory: [],
+          avgResolutionHours: null,
+          resolvedCount: 0,
+        },
+        billing: {
+          activeSubscriptions,
+          expiringSoon,
+          paymentFailed,
+          inactiveSubscriptions,
+          estimatedMonthlyRevenue,
+          averageRevenuePerSchool,
+          averageRevenuePerVehicle,
+          currency: 'PKR',
+          revenueBySchool,
+        },
+      },
+    };
+  }
 
 }

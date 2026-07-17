@@ -5,6 +5,7 @@ import { CreateKidDto } from './dto/CreateKid.dto';
 import { Types } from 'mongoose';
 import mongoose from 'mongoose';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { Kid } from './kid.schema';
 import { title } from 'process';
 
@@ -17,7 +18,8 @@ export class KidService {
   constructor(
    
     private databaseService: DatabaseService,
-    private firebaseAdminService: FirebaseAdminService
+    private firebaseAdminService: FirebaseAdminService,
+    private whatsappService: WhatsappService
 
    
   ) {}
@@ -68,7 +70,23 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
     parentId: Parent._id,
   });
 
-  const savedKid = await newKid.save();
+  let savedKid;
+  try {
+    savedKid = await newKid.save();
+  } catch (err) {
+    if (err.name === 'ValidationError') {
+      throw new BadRequestException(err.message);
+    }
+    throw err;
+  }
+
+  // Step 5b: Notify the school (via WhatsApp) that a new student is
+  // pending verification — fire-and-forget, never blocks kid creation.
+  if (CreateKidDto.schoolId) {
+    this.notifySchoolOfNewStudent(CreateKidDto.schoolId, Parent, savedKid).catch(
+      (err) => console.error('School new-student notify failed:', err?.message || err),
+    );
+  }
 
   // Step 6: Send notification ONLY if driver exists
   if (driver) {
@@ -106,6 +124,34 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
     data: savedKid,
   };
 }
+
+// Notifies the school's registered contact number via WhatsApp when a
+// parent self-adds a kid and links a school — so the admin knows to
+// verify/activate the student on their dashboard. Uses the school's own
+// WABA credentials if connected, otherwise falls back to the platform's
+// default WhatsApp number.
+private async notifySchoolOfNewStudent(schoolId: string, parent: any, kid: any) {
+  const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
+  if (!school || !school.contactNumber) return;
+
+  const message = `New student pending verification 🎒 Student: ${kid.fullname || 'N/A'}, Parent: ${parent.fullname || parent.email} (${parent.phoneNo || parent.email}). Please review and verify in your SmartVan admin dashboard.`;
+
+  if (school.waConnected && school.waPhoneNumberId && school.waAccessToken) {
+    // Uses the school's own WABA — only works reliably if the school has
+    // messaged that number within 24h, or has its own approved templates.
+    await this.whatsappService.sendWithSchoolCredentials(
+      school.waPhoneNumberId,
+      school.waAccessToken,
+      school.contactNumber,
+      message,
+    );
+  } else {
+    // Platform default number — use the approved smartvan_alert template
+    // so this actually delivers regardless of prior session status.
+    await this.whatsappService.sendTemplateMessage(school.contactNumber, school.schoolName || 'Admin', message);
+  }
+}
+
 async getKids(userId: string, userType: string) {
 
 
@@ -676,14 +722,12 @@ const driver = await this.databaseService.repositories.driverModel.findOne({
 
 
 
-  if (driver.status !== "active") {
-    throw new BadRequestException('Driver is not active');
-  }
-
-  
-
   if (!driver) {
     throw new BadRequestException('Driver not found in this school');
+  }
+
+  if (driver.status !== "active") {
+    throw new BadRequestException('Driver is not active');
   }
 
   const existingVan = await this.databaseService.repositories.VanModel.findOne({
@@ -855,6 +899,27 @@ async verifyStudentsByAdmin(
           },
         },
       );
+    }
+
+    // 💬 WhatsApp — uses the school's own WABA if connected, else platform default
+    if (parent.phoneNo) {
+      try {
+        if (school.waConnected && school.waPhoneNumberId && school.waAccessToken) {
+          await this.whatsappService.sendWithSchoolCredentials(
+            school.waPhoneNumberId,
+            school.waAccessToken,
+            parent.phoneNo,
+            message,
+          );
+        } else {
+          // Platform default number — use the approved smartvan_alert
+          // template so this delivers even if the parent has never
+          // messaged our WhatsApp number before.
+          await this.whatsappService.sendTemplateMessage(parent.phoneNo, parent.fullname || 'Parent', message);
+        }
+      } catch (err) {
+        console.error('Parent verification WhatsApp send failed:', err?.message || err);
+      }
     }
 
     await this.databaseService.repositories.notificationModel.create({

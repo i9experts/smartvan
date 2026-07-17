@@ -40,7 +40,10 @@ afterInit(server: Server) {
   console.log("socket server started");
 
   server.use((socket: any, next) => {
-    let token = socket.handshake.headers["authorization"] || socket.handshake.query?.token;
+    let token =
+      socket.handshake.auth?.token ||
+      socket.handshake.headers["authorization"] ||
+      socket.handshake.query?.token;
     console.log("Raw token:", token);
 
     if (!token) {
