@@ -44,10 +44,11 @@ async editSchoolProfile(@Req() req, @Body() body: any) {
   return this.adminService.editSchoolProfileByAdmin(adminId, body);
 }
 
+@UseGuards(AuthGuard('jwt'))
 @Post('edit-admin-school')
 async editAdminAndSchool(@Req() req, @Body() body: any) {
   // ✅ Role check
-  if (req.user.role !== 'superadmin') {
+  if (!req.user || req.user.role !== 'superadmin') {
     throw new UnauthorizedException('Only superadmins can access this API');
   }
 
