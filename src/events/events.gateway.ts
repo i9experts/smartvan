@@ -17,6 +17,8 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { Server } from 'socket.io';
 import { CustomSocket } from './custom-socket.interface';
 import { Types } from 'mongoose';
+import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 
 @WebSocketGateway({
   cors: {
@@ -29,6 +31,8 @@ export class EventsGateway
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
+    private readonly firebaseAdminService: FirebaseAdminService,
+    private readonly whatsappService: WhatsappService,
   ) {
     console.log('🔥 EventsGateway constructor called');
   }
@@ -214,5 +218,111 @@ afterInit(server: Server) {
     socket.join(tripId);
     console.log(`Parent ${parentId} joined trip room: ${tripId}`);
     this.server.to(socket.id).emit('joinedTrip', { tripId });
+  }
+
+  @SubscribeMessage('sos')
+  async handleSOS(
+    @MessageBody() data: { tripId: string; message?: string; location?: { lat: number; lng: number } },
+    @ConnectedSocket() socket: CustomSocket,
+  ) {
+    const ackFail = (reason: string) => {
+      socket.emit('sosAck', { success: false, error: reason });
+    };
+
+    try {
+      const parentId = socket?.decoded_token?.userId || socket?.decoded_token?.sub;
+      if (!parentId || socket?.decoded_token?.userType !== 'parent') {
+        return ackFail('Only parents can send an SOS alert');
+      }
+
+      const { tripId } = data || ({} as any);
+      if (!tripId) {
+        return ackFail('tripId is required');
+      }
+
+      const trip = await this.databaseService.repositories.TripModel.findById(
+        new Types.ObjectId(tripId),
+        { vanId: 1, schoolId: 1 },
+      ).lean();
+      if (!trip) {
+        return ackFail('Trip not found');
+      }
+
+      // Same authorization check as joinTrip — only a parent with a child on
+      // this exact van can trigger an SOS for this trip.
+      const kid = await this.databaseService.repositories.KidModel.findOne({
+        parentId: new Types.ObjectId(parentId),
+        VanId: trip.vanId,
+      }).lean();
+      if (!kid) {
+        console.warn(`Unauthorized SOS attempt — parentId: ${parentId}, tripId: ${tripId}`);
+        return ackFail('Not authorized: no child on this van');
+      }
+
+      // 1) Persist the SOS as a real, queryable notification record —
+      // this is what makes it show up in admin/driver alert lists later,
+      // rather than existing only as a socket event nobody stored.
+      const notification = await new this.databaseService.repositories.notificationModel({
+        type: 'sos',
+        alertType: 'SOS_EMERGENCY',
+        VanId: trip.vanId,
+        schoolId: trip.schoolId,
+        parentId: parentId,
+        message: data?.message || `Emergency SOS from ${kid.fullname || 'a parent'}`,
+        status: 'sent',
+        date: new Date(),
+      }).save();
+
+      // 2) Real-time alert to everyone in the trip room (the driver, chiefly)
+      this.server.to(tripId).emit('sosAlert', {
+        tripId,
+        studentName: kid.fullname,
+        message: data?.message,
+        location: data?.location,
+        at: new Date().toISOString(),
+      });
+
+      // 3) Best-effort push + WhatsApp escalation — these must never block
+      // or fail the ack; the parent should get confirmation the moment the
+      // notification record + socket broadcast above succeed.
+      const van = await this.databaseService.repositories.VanModel.findById(trip.vanId).lean();
+      const driver = van?.driverId
+        ? await this.databaseService.repositories.driverModel.findById(van.driverId).lean()
+        : null;
+
+      if (driver?.fcmToken) {
+        this.firebaseAdminService
+          .sendToDevice(driver.fcmToken, {
+            notification: {
+              title: '🚨 Emergency SOS',
+              body: `${kid.fullname || "A parent"}'s parent sent an SOS alert`,
+            },
+            data: { type: 'sos', tripId },
+          })
+          .catch((e) => console.error('SOS push to driver failed:', e));
+      }
+
+      const school = await this.databaseService.repositories.SchoolModel.findById(trip.schoolId).lean();
+      if (school?.contactNumber) {
+        // Note: smartvan_sos WhatsApp template is still pending Meta approval
+        // as of this writing — this call will fail gracefully (returns
+        // {success:false}, doesn't throw) until that template is approved.
+        this.whatsappService
+          .sendSosAlert(
+            school.contactNumber,
+            'Parent',
+            kid.fullname || 'Student',
+            (van as any)?.carNumber || trip.vanId,
+            school.contactNumber,
+          )
+          .catch((e) => console.error('SOS WhatsApp to school failed:', e));
+      }
+
+      // 4) Only now tell the parent it actually worked
+      socket.emit('sosAck', { success: true, notificationId: notification._id });
+    } catch (err) {
+      console.error('SOS handler error:', err);
+      ackFail('Server error while sending SOS');
+    }
   }
 }
