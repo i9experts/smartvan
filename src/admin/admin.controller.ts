@@ -40,7 +40,7 @@ async createAdminAndSchool(@Req() req, @Body() body: any) {
 @UseGuards(AuthGuard('jwt'))
 @Post('editSchoolProfile')
 async editSchoolProfile(@Req() req, @Body() body: any) {
-  const adminId = req.user.sub;
+  const adminId = req.user.userId;
   return this.adminService.editSchoolProfileByAdmin(adminId, body);
 }
 
