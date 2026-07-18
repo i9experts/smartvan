@@ -29,7 +29,7 @@ class InvoiceEntry {
 
 @Schema({ timestamps: true })
 export class School {
-  @Prop()
+  @Prop({ required: true })
   schoolName: string;
 
   @Prop()
