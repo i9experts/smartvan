@@ -55,11 +55,15 @@ export class Notification {
 
   @Prop({
     type: String,
-    enum: ['ALL_PARENTS', 'ALL_DRIVERS', 'SPECIFIC_VAN'],
+    enum: ['ALL_PARENTS', 'ALL_DRIVERS', 'SPECIFIC_VAN', 'ADMIN'],
     required: false,
   })
-  recipientType: 'ALL_PARENTS' | 'ALL_DRIVERS' | 'SPECIFIC_VAN';
+  recipientType: 'ALL_PARENTS' | 'ALL_DRIVERS' | 'SPECIFIC_VAN' | 'ADMIN';
 
+  // Voice message URL (S3) — used for driver-originated alerts, since many
+  // drivers in our target markets aren't comfortable typing a message.
+  @Prop({ required: false })
+  audioUrl?: string;
 
   @Prop({ type: Date, default: Date.now })
   date?: Date;

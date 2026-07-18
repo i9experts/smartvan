@@ -539,5 +539,29 @@ async deleteSupportLink(@Body('id') id: string) {
   return this.AlertService.deleteSupportLink(id);
 }
 
+// Driver -> school admin communication. Separate from addAlert (which is
+// admin broadcasting outward) and separate from the Reports/Complaints
+// system (formal issue tracking with status) — this is a quick message
+// or voice note a driver can send directly to their school's admin.
+@UseGuards(AuthGuard('jwt'))
+@Post('sendAlertByDriver')
+async sendAlertByDriver(@Req() req: any, @Body() body: { message?: string; audioUrl?: string }) {
+  const driverId = req.user.userId;
+  return this.AlertService.sendAlertByDriver(driverId, body.message, body.audioUrl);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Get('getDriverAlertsForAdmin')
+async getDriverAlertsForAdmin(
+  @Req() req: any,
+  @Query('page') page: string,
+  @Query('limit') limit: string,
+) {
+  const adminId = req.user.userId;
+  const pageNumber = page ? parseInt(page) : 1;
+  const limitNumber = limit ? parseInt(limit) : 10;
+  return this.AlertService.getDriverAlertsForAdmin(adminId, pageNumber, limitNumber);
+}
+
 }
 

@@ -699,4 +699,78 @@ async deleteSupportLink(id: string) {
   }
 }
 
+async sendAlertByDriver(driverId: string, message?: string, audioUrl?: string) {
+  if (!message && !audioUrl) {
+    throw new BadRequestException('Either a message or a voice note is required');
+  }
+
+  const driver = await this.databaseService.repositories.driverModel.findById(
+    new Types.ObjectId(driverId),
+  );
+  if (!driver) {
+    throw new NotFoundException('Driver not found');
+  }
+
+  const notification = new this.databaseService.repositories.notificationModel({
+    type: 'driver_alert',
+    recipientType: 'ADMIN',
+    driverId: driver._id.toString(),
+    schoolId: (driver as any).schoolId,
+    message: message || '',
+    audioUrl,
+    date: new Date(),
+  });
+  await notification.save();
+
+  return {
+    message: 'Alert sent to school admin',
+    data: notification,
+  };
+}
+
+async getDriverAlertsForAdmin(adminId: string, page = 1, limit = 10) {
+  const adminObjectId = new Types.ObjectId(adminId);
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: adminObjectId,
+  });
+  if (!school) {
+    throw new UnauthorizedException('Invalid admin or school not found');
+  }
+
+  const skip = (page - 1) * limit;
+  const schoolId = school._id.toString();
+
+  const [alerts, total] = await Promise.all([
+    this.databaseService.repositories.notificationModel
+      .find({ recipientType: 'ADMIN', schoolId })
+      .sort({ date: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    this.databaseService.repositories.notificationModel.countDocuments({
+      recipientType: 'ADMIN',
+      schoolId,
+    }),
+  ]);
+
+  // Enrich with the driver's name — the raw notification only stores driverId.
+  const driverIds = [...new Set(alerts.map((a: any) => a.driverId).filter(Boolean))];
+  const drivers = await this.databaseService.repositories.driverModel
+    .find({ _id: { $in: driverIds.map((id) => new Types.ObjectId(id as string)) } })
+    .select('fullname')
+    .lean();
+  const driverNameById = new Map(drivers.map((d: any) => [d._id.toString(), d.fullname]));
+
+  return {
+    message: 'Driver alerts fetched',
+    data: alerts.map((a: any) => ({
+      ...a,
+      driverName: driverNameById.get(a.driverId) || 'Unknown driver',
+    })),
+    total,
+    page,
+    limit,
+  };
+}
+
 }
