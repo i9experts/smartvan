@@ -64,7 +64,22 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
     }
   }
 
-  // Step 5: Create kid
+  // Step 5: Prevent accidental duplicates — same parent, same child name
+  // already on file. Scoped to this parent only (not global) since two
+  // different families can obviously have children with the same name.
+  if (CreateKidDto.fullname && CreateKidDto.fullname.trim().length > 0) {
+    const existingKid = await this.databaseService.repositories.KidModel.findOne({
+      parentId: Parent._id,
+      fullname: { $regex: `^${CreateKidDto.fullname.trim()}$`, $options: 'i' },
+    });
+    if (existingKid) {
+      throw new BadRequestException(
+        `You already have a child named "${CreateKidDto.fullname.trim()}" on file. Please edit the existing record instead of adding a duplicate.`,
+      );
+    }
+  }
+
+  // Step 6: Create kid
   const newKid = new this.databaseService.repositories.KidModel({
     ...CreateKidDto,
     parentId: Parent._id,
