@@ -130,6 +130,15 @@ async editAdminAndSchool(body: any) {
     if (adminInfo.email && adminInfo.email !== admin.email) {
       newEmail = adminInfo.email;
 
+      // Make sure no other admin is already using this email before we assign it
+      const emailTaken = await this.databaseService.repositories.AdminModel.findOne({
+        email: newEmail,
+        _id: { $ne: admin._id },
+      });
+      if (emailTaken) {
+        throw new BadRequestException('Another admin is already using this email');
+      }
+
       // Generate random password
       const randomPassword = crypto.randomBytes(6).toString('hex'); // 12 chars
       const hashedPassword = await bcrypt.hash(randomPassword, 10);
