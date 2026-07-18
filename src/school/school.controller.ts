@@ -35,8 +35,12 @@ export class SchoolController {
     return this.schoolService.getDriversProfile(req.user.userId);
   }
 
+  @UseGuards(AuthGuard('jwt'))
   @Get('getAllSchools')
-  async getAllSchools() {
+  async getAllSchools(@Req() req: any) {
+    if (!req.user || req.user.role !== 'superadmin') {
+      throw new UnauthorizedException('Only superadmins can access this API');
+    }
     return this.schoolService.getAllSchools();
   }
 

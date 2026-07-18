@@ -266,7 +266,28 @@ export class SchoolService {
   }
 
   async getAllSchools() {
-    return this.databaseService.repositories.SchoolModel.find().sort({ _id: -1 }).lean();
+    return this.databaseService.repositories.SchoolModel.find(
+      {},
+      {
+        schoolName: 1,
+        schoolImage: 1,
+        schoolEmail: 1,
+        contactPerson: 1,
+        contactNumber: 1,
+        address: 1,
+        branchName: 1,
+        currentPlan: 1,
+        status: 1,
+        allowedVans: 1,
+        allowedStudents: 1,
+        allowedRoutes: 1,
+        timezone: 1,
+        createdAt: 1,
+        // Deliberately excluded: waAccessToken, waPhoneNumberId, waPhoneNumber,
+        // paymentMethod, billingCycle, lat, long — sensitive/internal fields
+        // that don't belong in a general schools listing.
+      },
+    ).sort({ _id: -1 }).lean();
   }
 
   async changeSchoolStatusByAdmin(schoolId: string, status: string, actor?: { userId: string; email: string; role: string }) {
