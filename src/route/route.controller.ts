@@ -94,6 +94,7 @@ async getRouteStudents(@Req() req: any, @Param('routeId') routeId: string) {
   return this.routetService.getRouteStudents(req.user.userId, routeId);
 }
 
+@UseGuards(AuthGuard('jwt'))
 @Post('deleteRouteByAdmin')
 async deleteRouteByAdmin(
   @Req() req: any,
