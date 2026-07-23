@@ -33,7 +33,9 @@ import {
   Post,
   UploadedFile,
   UseInterceptors,
+  UseGuards,
 } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
 import { createMulterOptions } from './multer.config';
@@ -46,6 +48,7 @@ export class UploadController {
     private readonly configService: ConfigService,
   ) {}
 
+  @UseGuards(AuthGuard('jwt'))
   @Post('image')
 @UseInterceptors(
   FileInterceptor('file', createMulterOptions(new ConfigService())), // ✅ safe
