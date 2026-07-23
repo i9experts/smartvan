@@ -54,6 +54,7 @@ export class TripController {
     return this.tripService.dropStudentForHome(req.user.userId, dto);
   }
 
+  @UseGuards(AuthGuard('jwt'))
   @Get('getLocation')
   async getLocationsByDriver(@Body() dto: getLocationDto, @Req() req: any) {
     return await this.tripService.getLocationByDriver(dto);

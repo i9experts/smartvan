@@ -153,6 +153,7 @@ console.log(AdminId)
     );
   }
 
+    @UseGuards(AuthGuard('jwt'))
     @Get("getVanById/:id")
   async getVan(@Param("id") id: string) {
     console.log(id)
@@ -160,6 +161,7 @@ console.log(AdminId)
   }
 
 
+    @UseGuards(AuthGuard('jwt'))
       @Get("getDriverById/:id")
   async getDriverById(@Param("id") id: string) {
     console.log(id)
@@ -300,6 +302,7 @@ async deleteVanByAdmin(@Req() req: any, @Body('vanId') vanId: string) {
   return this.vanService.deleteVanByAdmin(adminId, vanId);
 }
 
+@UseGuards(AuthGuard('jwt'))
 @Get('getVansBySchoolId/:schoolId')
 async getVansBySchoolId(@Param('schoolId') schoolId: string) {
   return this.vanService.getVansBySchool(schoolId);

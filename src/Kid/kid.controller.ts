@@ -47,6 +47,7 @@ async verifyStudents(
 
 
 
+@UseGuards(AuthGuard('jwt'))
 @Post('removeVanFromKid')
 async removeVanFromKid(
   @Req() req: any,
