@@ -256,7 +256,7 @@ async updateVan(
   @Post('uploadDocuments')
   async updateVanDocuments(@Body() body: any, @Req() req: any) {
    
-    const driverId = req.user?.id; 
+    const driverId = req.user?.userId;
 
     return this.vanService.uploadDocument(body, driverId);
   }
