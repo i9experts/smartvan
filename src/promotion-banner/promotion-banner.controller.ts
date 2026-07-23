@@ -6,7 +6,9 @@ import {
   Patch,
   Param,
   Delete,
+  UseGuards,
 } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { PromotionBannerService } from './promotion-banner.service';
 import { CreatePromotionBannerDto } from './dto/create-promotion-banner.dto';
 import { UpdatePromotionBannerDto } from './dto/update-promotion-banner.dto';
@@ -18,12 +20,14 @@ export class PromotionBannerController {
   ) {}
 
   // ADMIN
+  @UseGuards(AuthGuard('jwt'))
   @Post('create')
   create(@Body() dto: CreatePromotionBannerDto) {
     return this.promotionBannerService.create(dto);
   }
 
   // ADMIN
+  @UseGuards(AuthGuard('jwt'))
   @Get("findAll")
   findAll() {
     return this.promotionBannerService.findAll();
@@ -40,6 +44,7 @@ export class PromotionBannerController {
     return this.promotionBannerService.findOne(id);
   }
 
+  @UseGuards(AuthGuard('jwt'))
   @Patch(':id')
   update(
     @Param('id') id: string,
@@ -48,6 +53,7 @@ export class PromotionBannerController {
     return this.promotionBannerService.update(id, dto);
   }
 
+  @UseGuards(AuthGuard('jwt'))
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.promotionBannerService.remove(id);
