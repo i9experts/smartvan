@@ -263,6 +263,31 @@ async getAssignedTripByDriver(driverId: string) {
 
     console.log("wali",existingTrip)
 
+    // Passenger list for THIS route's stops — previously only a count was
+    // returned, giving the driver no visibility into who they're actually
+    // picking up.
+    const stopKidIds = (route.kidLocations || []).map((k: any) => k.kidId);
+    const stopKids = stopKidIds.length
+      ? await this.databaseService.repositories.KidModel.find(
+          { _id: { $in: stopKidIds } },
+          { fullname: 1, image: 1, grade: 1 },
+        )
+      : [];
+    const kidById: Record<string, any> = {};
+    stopKids.forEach((k: any) => { kidById[k._id.toString()] = k; });
+
+    const passengers = (route.kidLocations || []).map((stop: any) => {
+      const kid = kidById[stop.kidId?.toString()];
+      return {
+        kidId: stop.kidId,
+        fullname: kid?.fullname || 'Unknown',
+        image: kid?.image || null,
+        grade: kid?.grade || null,
+        lat: stop.lat,
+        long: stop.long,
+      };
+    });
+
     const routeInfo = {
       driverName: driver.fullname,
       vehicleType: van.vehicleType,
@@ -276,6 +301,7 @@ async getAssignedTripByDriver(driverId: string) {
       startTime: route.startTime,
       schoolContact: school?.contactNumber || null,
       totalKids,
+      passengers,
     };
 
     // agar trip mili to details do

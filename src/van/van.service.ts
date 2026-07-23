@@ -677,6 +677,37 @@ async updateProfile(
   };
 }
 
+// Lets a school admin edit one of THEIR OWN drivers' details — separate
+// from updateProfile above, which is self-service (driver editing their
+// own profile via JWT). No such admin-side path existed before this.
+async editDriverByAdmin(adminId: string, driverId: string, editDto: EditDriverDto) {
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: new Types.ObjectId(adminId),
+  });
+  if (!school) {
+    throw new BadRequestException('School not found');
+  }
+
+  const driver = await this.databaseService.repositories.driverModel.findOne({
+    _id: driverId,
+    schoolId: school._id.toString(),
+  });
+  if (!driver) {
+    throw new BadRequestException('Driver not found in this school');
+  }
+
+  const updatedDriver = await this.databaseService.repositories.driverModel.findByIdAndUpdate(
+    driverId,
+    { $set: editDto },
+    { new: true },
+  );
+
+  return {
+    message: 'Driver updated successfully',
+    data: updatedDriver,
+  };
+}
+
 
 async updateVan(driverId: string, vanId: string, createVanDto: CreateVanDto) {
     // 🔹 Step 1: Driver check

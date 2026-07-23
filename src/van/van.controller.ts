@@ -228,6 +228,17 @@ async updateProfile(
 }
 
 @UseGuards(AuthGuard('jwt'))
+@Post('editDriverByAdmin')
+async editDriverByAdmin(
+  @Req() req: any,
+  @Body('driverId') driverId: string,
+  @Body() editDto: EditDriverDto,
+) {
+  const adminId = req.user.userId;
+  return this.vanService.editDriverByAdmin(adminId, driverId, editDto);
+}
+
+@UseGuards(AuthGuard('jwt'))
 @Post('update-van')
 async updateVan(
   @Req() req: any,
