@@ -61,6 +61,7 @@ async editAdminAndSchool(@Req() req, @Body() body: any) {
 }
 
 
+@UseGuards(AuthGuard('jwt'))
 @Get('getSchoolById/:id')
 async getSchoolById(@Param('id') id: string) {
   return this.adminService.getSchoolById(id);
@@ -134,9 +135,13 @@ async getAllSchoolsBySuperAdmin(
       return this.adminService.getProfile(userId);
     }
 
+    @UseGuards(AuthGuard('jwt'))
     @Get('getAllSchools')
-async getAllSchools() {
-  return this.adminService.getallschool(); // service ko direct call, kuch pass nahi kar rahe
+async getAllSchools(@Req() req: any) {
+  if (!req.user || req.user.role !== 'superadmin') {
+    throw new UnauthorizedException('Only superadmins can access this API');
+  }
+  return this.adminService.getallschool();
 }
 @UseGuards(AuthGuard('jwt'))
 @Post('addStudent')
@@ -321,8 +326,12 @@ async getStudentsBySuperAdmin(
 }
 
 
+  @UseGuards(AuthGuard('jwt'))
   @Get("getStudentByIdForSuperAdmin/:id")
 async getStudentByIdForSuperAdmin(@Param("id") id: string, @Req () req: any,) {
+  if (!req.user || req.user.role !== 'superadmin') {
+    throw new UnauthorizedException('Only superadmins can access this API');
+  }
   return this.adminService.getKidByIdForSuperAdmin(id);
 }
 
