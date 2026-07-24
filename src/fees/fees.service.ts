@@ -39,8 +39,19 @@ export class FeesService {
 
   // ── Set / update transport fee for a route or van ──────────────────────────
   async setFee(body: any) {
-    const { schoolId, routeId, vanId, amount, currency, billingCycle, description } = body;
+    const {
+      schoolId, routeId, vanId, amount, currency, billingCycle, description,
+      serviceType, pickOnlyAmount, dropOnlyAmount,
+      siblingDiscountPercent, earlyPaymentDiscountPercent, earlyPaymentDeadlineDay,
+      lateFeeAmount, lateFeeAfterDay, notes,
+    } = body;
     if (!schoolId || !amount) throw new BadRequestException('schoolId and amount are required');
+
+    const optionalFields = {
+      serviceType, pickOnlyAmount, dropOnlyAmount,
+      siblingDiscountPercent, earlyPaymentDiscountPercent, earlyPaymentDeadlineDay,
+      lateFeeAmount, lateFeeAfterDay, notes,
+    };
 
     // Update if exists, create if not
     const existing = await this.feeModel.findOne({
@@ -55,6 +66,10 @@ export class FeesService {
       existing.billingCycle = billingCycle || existing.billingCycle;
       existing.description = description || existing.description;
       existing.isActive = true;
+      Object.keys(optionalFields).forEach((key) => {
+        const value = (optionalFields as any)[key];
+        if (value !== undefined) (existing as any)[key] = value;
+      });
       await existing.save();
       return { message: 'Fee updated successfully', data: existing };
     }
@@ -64,6 +79,7 @@ export class FeesService {
       currency: currency || 'PKR',
       billingCycle: billingCycle || 'monthly',
       description: description || 'Monthly transport fee',
+      ...optionalFields,
     });
 
     return { message: 'Fee set successfully', data: fee };
