@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as nodemailer from 'nodemailer';
@@ -148,6 +148,12 @@ export class FeesService {
   async recordPayment(body: any, collectorId: string, collectorType: string) {
     const { kidId, schoolId, month, paymentMethod, amount, notes } = body;
     const targetMonth = month || this.getCurrentMonth();
+
+    const kidCheck = await this.databaseService.repositories.KidModel.findById(kidId).lean() as any;
+    if (!kidCheck) throw new NotFoundException('Student not found');
+    if (kidCheck.schoolId !== schoolId) {
+      throw new UnauthorizedException('This student does not belong to your school');
+    }
 
     // Find or create payment record
     let payment = await this.paymentModel.findOne({
@@ -362,21 +368,34 @@ export class FeesService {
     };
   }
 
-  async updatePaymentStatus(paymentId: string, status: string) {
+  async updatePaymentStatus(paymentId: string, status: string, callerSchoolId: string) {
     const payment = await this.paymentModel.findById(paymentId);
     if (!payment) throw new NotFoundException('Payment not found');
+    if (payment.schoolId !== callerSchoolId) {
+      throw new UnauthorizedException('This payment does not belong to your school');
+    }
     payment.status = status as any;
     if (status === 'overdue') payment.paidAt = null;
     await payment.save();
     return { message: 'Status updated', data: payment };
   }
 
-  async deleteFee(feeId: string) {
+  async deleteFee(feeId: string, callerSchoolId: string) {
+    const fee = await this.feeModel.findById(feeId);
+    if (!fee) throw new NotFoundException('Fee not found');
+    if (fee.schoolId !== callerSchoolId) {
+      throw new UnauthorizedException('This fee does not belong to your school');
+    }
     await this.feeModel.findByIdAndUpdate(feeId, { isActive: false });
     return { message: 'Fee deleted successfully' };
   }
 
-  async getStudentPayments(kidId: string) {
+  async getStudentPayments(kidId: string, callerSchoolId: string) {
+    const kid = await this.databaseService.repositories.KidModel.findById(kidId);
+    if (!kid) throw new NotFoundException('Student not found');
+    if ((kid as any).schoolId !== callerSchoolId) {
+      throw new UnauthorizedException('This student does not belong to your school');
+    }
     const payments = await this.paymentModel.find({ kidId }).sort({ createdAt: -1 }).lean();
     return { message: 'Student payments fetched', data: payments };
   }

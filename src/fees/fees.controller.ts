@@ -78,7 +78,21 @@ export class FeesController {
   @UseGuards(AuthGuard('jwt'))
   @Post('record-payment')
   async recordPayment(@Body() body: any, @Req() req: any) {
-    return this.feesService.recordPayment(body, req.user.userId, req.user.role || 'admin');
+    // SECURITY: schoolId was previously trusted directly from the request
+    // body — anyone with a valid token (driver or admin) could claim any
+    // school and mark any student's fee as "paid". Resolve it from the
+    // caller's own identity instead, exactly like every other endpoint here.
+    let callerSchoolId: string;
+    if (req.user?.userType === 'driver') {
+      const driver = await this.databaseService.repositories.driverModel.findById(req.user.userId);
+      if (!driver || !(driver as any).schoolId) {
+        throw new UnauthorizedException('Driver has no assigned school');
+      }
+      callerSchoolId = (driver as any).schoolId;
+    } else {
+      callerSchoolId = await this.resolveSchoolId(req, body.schoolId);
+    }
+    return this.feesService.recordPayment({ ...body, schoolId: callerSchoolId }, req.user.userId, req.user.role || req.user.userType || 'admin');
   }
 
   // Get all payments for a school (admin view)
@@ -132,21 +146,24 @@ export class FeesController {
   // Update payment status (overdue etc)
   @UseGuards(AuthGuard('jwt'))
   @Post('update-status')
-  async updateStatus(@Body() body: { paymentId: string; status: string }, @Req() req: any) {
-    return this.feesService.updatePaymentStatus(body.paymentId, body.status);
+  async updateStatus(@Body() body: { paymentId: string; status: string; schoolId?: string }, @Req() req: any) {
+    const schoolId = await this.resolveSchoolId(req, body.schoolId);
+    return this.feesService.updatePaymentStatus(body.paymentId, body.status, schoolId);
   }
 
   // Delete a fee config
   @UseGuards(AuthGuard('jwt'))
   @Post('delete-fee')
-  async deleteFee(@Body() body: { feeId: string }, @Req() req: any) {
-    return this.feesService.deleteFee(body.feeId);
+  async deleteFee(@Body() body: { feeId: string; schoolId?: string }, @Req() req: any) {
+    const schoolId = await this.resolveSchoolId(req, body.schoolId);
+    return this.feesService.deleteFee(body.feeId, schoolId);
   }
 
   // Get payments by student
   @UseGuards(AuthGuard('jwt'))
   @Get('student-payments')
-  async getStudentPayments(@Query('kidId') kidId: string, @Req() req: any) {
-    return this.feesService.getStudentPayments(kidId);
+  async getStudentPayments(@Query('kidId') kidId: string, @Query('schoolId') schoolId: string, @Req() req: any) {
+    const resolvedSchoolId = await this.resolveSchoolId(req, schoolId);
+    return this.feesService.getStudentPayments(kidId, resolvedSchoolId);
   }
 }
