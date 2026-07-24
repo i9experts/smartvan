@@ -146,34 +146,50 @@ export class FeesService {
 
   // ── Record a payment (cash/jazzcash/bank) ─────────────────────────────────
   async recordPayment(body: any, collectorId: string, collectorType: string) {
-    const { kidId, schoolId, month, paymentMethod, amount, notes } = body;
+    const { paymentId, schoolId, paymentMethod, amount, notes } = body;
+    let { kidId, month } = body;
     const targetMonth = month || this.getCurrentMonth();
 
-    const kidCheck = await this.databaseService.repositories.KidModel.findById(kidId).lean() as any;
-    if (!kidCheck) throw new NotFoundException('Student not found');
-    if (kidCheck.schoolId !== schoolId) {
-      throw new UnauthorizedException('This student does not belong to your school');
-    }
+    let payment: any;
 
-    // Find or create payment record
-    let payment = await this.paymentModel.findOne({
-      kidId, schoolId, month: targetMonth,
-    });
+    if (paymentId) {
+      // Admin panel's Record Payment modal already has the specific
+      // payment selected and only sends its ID — the caller never had
+      // kidId/month in the first place, so look it up directly instead.
+      payment = await this.paymentModel.findById(paymentId);
+      if (!payment) throw new NotFoundException('Payment not found');
+      if (payment.schoolId !== schoolId) {
+        throw new UnauthorizedException('This payment does not belong to your school');
+      }
+      kidId = payment.kidId;
+      month = payment.month;
+    } else {
+      const kidCheck = await this.databaseService.repositories.KidModel.findById(kidId).lean() as any;
+      if (!kidCheck) throw new NotFoundException('Student not found');
+      if (kidCheck.schoolId !== schoolId) {
+        throw new UnauthorizedException('This student does not belong to your school');
+      }
 
-    if (!payment) {
-      // Auto-create if not exists
-      const fee = await this.feeModel.findOne({ schoolId, isActive: true });
-      payment = await this.paymentModel.create({
-        schoolId, kidId,
-        parentId: body.parentId || '',
-        feeId: fee?._id.toString() || '',
-        amount: amount || fee?.amount || 0,
-        currency: fee?.currency || 'PKR',
-        paymentMethod: paymentMethod || 'cash',
-        status: 'pending',
-        month: targetMonth,
-        receiptNumber: this.generateReceiptNumber(),
+      // Find or create payment record
+      payment = await this.paymentModel.findOne({
+        kidId, schoolId, month: targetMonth,
       });
+
+      if (!payment) {
+        // Auto-create if not exists
+        const fee = await this.feeModel.findOne({ schoolId, isActive: true });
+        payment = await this.paymentModel.create({
+          schoolId, kidId,
+          parentId: body.parentId || '',
+          feeId: fee?._id.toString() || '',
+          amount: amount || fee?.amount || 0,
+          currency: fee?.currency || 'PKR',
+          paymentMethod: paymentMethod || 'cash',
+          status: 'pending',
+          month: targetMonth,
+          receiptNumber: this.generateReceiptNumber(),
+        });
+      }
     }
 
     if (payment.status === 'paid') {
