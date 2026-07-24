@@ -89,12 +89,13 @@ async createAdminAndSchool(body: any) {
 }
 
 
-async updateOwnProfile(adminId: string, body: { name?: string; email?: string }) {
+async updateOwnProfile(adminId: string, body: { name?: string; email?: string; image?: string }) {
   const admin = await this.databaseService.repositories.AdminModel.findById(adminId);
   if (!admin) throw new NotFoundException('Admin not found');
 
   const updateFields: any = {};
   if (body.name) updateFields.name = body.name;
+  if (body.image) updateFields.image = body.image;
 
   if (body.email && body.email !== admin.email) {
     const emailTaken = await this.databaseService.repositories.AdminModel.findOne({
@@ -126,6 +127,7 @@ async editSchoolProfileByAdmin(adminId: string, body: any) {
   if (adminInfo && Object.keys(adminInfo).length > 0) {
     const updateFields: any = {};
     if (adminInfo.name) updateFields.name = adminInfo.name;
+    if (adminInfo.image) updateFields.image = adminInfo.image;
     await this.databaseService.repositories.AdminModel.updateOne({ _id: adminId }, { $set: updateFields });
   }
   if (schoolInfo && Object.keys(schoolInfo).length > 0) {
