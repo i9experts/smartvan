@@ -431,4 +431,44 @@ export class FeesService {
     const payments = await this.paymentModel.find({ kidId }).sort({ createdAt: -1 }).lean();
     return { message: 'Student payments fetched', data: payments };
   }
+
+  async getDriverStudentsPaymentStatus(driverId: string, month?: string) {
+    const targetMonth = month || this.getCurrentMonth();
+
+    const driver = await this.databaseService.repositories.driverModel.findById(driverId).lean() as any;
+    if (!driver) throw new NotFoundException('Driver not found');
+
+    const van = await this.databaseService.repositories.VanModel.findOne({ driverId }).lean() as any;
+    if (!van) {
+      return { message: 'No van assigned', data: [] };
+    }
+
+    const kids = await this.databaseService.repositories.KidModel.find({
+      VanId: van._id.toString(),
+      status: 'active',
+    }).lean();
+
+    const data = await Promise.all(kids.map(async (kid: any) => {
+      const payment = await this.paymentModel.findOne({
+        kidId: kid._id.toString(),
+        schoolId: driver.schoolId,
+        month: targetMonth,
+      }).lean() as any;
+
+      return {
+        kidId: kid._id.toString(),
+        fullname: kid.fullname || 'Unknown',
+        image: kid.image || null,
+        grade: kid.grade || null,
+        month: targetMonth,
+        paymentId: payment?._id?.toString() || null,
+        status: payment?.status || 'not_generated',
+        amount: payment?.amount ?? null,
+        currency: payment?.currency || 'PKR',
+        paidAt: payment?.paidAt || null,
+      };
+    }));
+
+    return { message: 'Driver students payment status fetched', data };
+  }
 }

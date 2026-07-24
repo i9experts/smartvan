@@ -166,4 +166,16 @@ export class FeesController {
     const resolvedSchoolId = await this.resolveSchoolId(req, schoolId);
     return this.feesService.getStudentPayments(kidId, resolvedSchoolId);
   }
+
+  // Driver's own assigned students with their current month's payment status —
+  // powers the driver app's fee collection screen. Nothing like this existed
+  // before; drivers had no way to see who still owes fees.
+  @UseGuards(AuthGuard('jwt'))
+  @Get('driver-students')
+  async getDriverStudentsPaymentStatus(@Query('month') month: string, @Req() req: any) {
+    if (req.user?.userType !== 'driver') {
+      throw new UnauthorizedException('Only drivers can access this API');
+    }
+    return this.feesService.getDriverStudentsPaymentStatus(req.user.userId, month);
+  }
 }
