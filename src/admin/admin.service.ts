@@ -89,6 +89,34 @@ async createAdminAndSchool(body: any) {
 }
 
 
+async updateOwnProfile(adminId: string, body: { name?: string; email?: string }) {
+  const admin = await this.databaseService.repositories.AdminModel.findById(adminId);
+  if (!admin) throw new NotFoundException('Admin not found');
+
+  const updateFields: any = {};
+  if (body.name) updateFields.name = body.name;
+
+  if (body.email && body.email !== admin.email) {
+    const emailTaken = await this.databaseService.repositories.AdminModel.findOne({
+      email: body.email,
+      _id: { $ne: admin._id },
+    });
+    if (emailTaken) {
+      throw new BadRequestException('Another admin is already using this email');
+    }
+    updateFields.email = body.email;
+  }
+
+  if (Object.keys(updateFields).length > 0) {
+    await this.databaseService.repositories.AdminModel.updateOne(
+      { _id: adminId },
+      { $set: updateFields },
+    );
+  }
+
+  return { message: 'Profile updated successfully' };
+}
+
 async editSchoolProfileByAdmin(adminId: string, body: any) {
   const { schoolInfo, adminInfo } = body;
   const admin = await this.databaseService.repositories.AdminModel.findById(adminId);
@@ -101,7 +129,7 @@ async editSchoolProfileByAdmin(adminId: string, body: any) {
     await this.databaseService.repositories.AdminModel.updateOne({ _id: adminId }, { $set: updateFields });
   }
   if (schoolInfo && Object.keys(schoolInfo).length > 0) {
-    const allowedFields = ['schoolName', 'schoolEmail', 'contactPerson', 'contactNumber', 'address', 'branchName', 'startTime', 'endTime', 'maxTripDuration', 'bufferTime', 'currency', 'country', 'timezone'];
+    const allowedFields = ['schoolName', 'schoolEmail', 'contactPerson', 'contactNumber', 'address', 'branchName', 'startTime', 'endTime', 'maxTripDuration', 'bufferTime', 'currency', 'country', 'timezone', 'schoolImage'];
     const filtered: any = {};
     allowedFields.forEach(f => { if (schoolInfo[f] !== undefined) filtered[f] = schoolInfo[f]; });
     await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: filtered });
