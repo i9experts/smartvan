@@ -44,6 +44,16 @@ async editSchoolProfile(@Req() req, @Body() body: any) {
   return this.adminService.editSchoolProfileByAdmin(adminId, body);
 }
 
+// The Settings page calls this for superadmins specifically (they have no
+// linked school, so the school-scoped editSchoolProfile doesn't apply).
+// This endpoint never existed at all — every superadmin profile save 404'd.
+@UseGuards(AuthGuard('jwt'))
+@Patch('update-own-profile')
+async updateOwnProfile(@Req() req, @Body() body: { name?: string; email?: string }) {
+  const adminId = req.user.userId;
+  return this.adminService.updateOwnProfile(adminId, body);
+}
+
 @UseGuards(AuthGuard('jwt'))
 @Post('edit-admin-school')
 async editAdminAndSchool(@Req() req, @Body() body: any) {
