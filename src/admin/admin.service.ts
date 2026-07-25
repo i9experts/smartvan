@@ -885,6 +885,72 @@ private async notifyExistingParentOfNewStudent(parent: any, kid: any, school: an
 // }
 
 
+async getAllParentsBySchool(adminId: string, page = 1, limit = 12, search?: string) {
+  const adminObjectId = new Types.ObjectId(adminId);
+
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: adminObjectId,
+  });
+  if (!school) {
+    throw new UnauthorizedException('School not found');
+  }
+
+  const schoolIdString = school._id.toString();
+  const skip = (page - 1) * limit;
+
+  const matchStage: any = { schoolId: schoolIdString };
+  if (search && search.trim()) {
+    matchStage.$or = [
+      { fullname: { $regex: search.trim(), $options: 'i' } },
+      { email: { $regex: search.trim(), $options: 'i' } },
+      { phoneNo: { $regex: search.trim(), $options: 'i' } },
+    ];
+  }
+
+  const pipeline: any[] = [
+    { $match: matchStage },
+    { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: limit },
+    {
+      $lookup: {
+        from: 'kids',
+        let: { parentIdStr: { $toString: '$_id' } },
+        pipeline: [
+          { $match: { $expr: { $eq: [{ $toString: '$parentId' }, '$$parentIdStr'] } } },
+          { $project: { fullname: 1, grade: 1, VanId: 1, status: 1 } },
+        ],
+        as: 'kids',
+      },
+    },
+    {
+      $project: {
+        _id: { $toString: '$_id' },
+        fullname: { $ifNull: ['$fullname', ''] },
+        email: { $ifNull: ['$email', ''] },
+        phoneNo: { $ifNull: ['$phoneNo', ''] },
+        address: { $ifNull: ['$address', ''] },
+        image: { $ifNull: ['$image', ''] },
+        createdAt: 1,
+        kids: 1,
+      },
+    },
+  ];
+
+  const [parents, total] = await Promise.all([
+    this.databaseService.repositories.parentModel.aggregate(pipeline),
+    this.databaseService.repositories.parentModel.countDocuments(matchStage),
+  ]);
+
+  return {
+    message: 'Parents fetched successfully',
+    data: parents,
+    total,
+    page,
+    limit,
+  };
+}
+
 async getKids(AdminId: string, query: any) {
   const adminObjectId = new Types.ObjectId(AdminId);
 

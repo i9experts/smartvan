@@ -176,6 +176,25 @@ async editKid(
   return this.adminService.editStudent(KidId , AdminId, EditStudentDto );
 }
 
+// Parents were previously only ever visible by deriving them from the
+// students list on the frontend — meaning any parent account with zero
+// currently-enrolled kids (e.g. their only child was removed) was
+// completely invisible to the school admin. This is a real, dedicated
+// endpoint that lists every parent belonging to the school directly.
+@UseGuards(AuthGuard('jwt'))
+@Get('getAllParents')
+async getAllParents(
+  @Req() req: any,
+  @Query('page') page: string,
+  @Query('limit') limit: string,
+  @Query('search') search?: string,
+) {
+  const adminId = req.user.userId;
+  const pageNumber = page ? parseInt(page) : 1;
+  const limitNumber = limit ? parseInt(limit) : 12;
+  return this.adminService.getAllParentsBySchool(adminId, pageNumber, limitNumber, search);
+}
+
  @UseGuards(AuthGuard('jwt')) // JWT Auth Guard use
   @Get("Get-Students")
   async getstudent(
