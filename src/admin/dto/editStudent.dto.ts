@@ -29,6 +29,18 @@ export class EditStudentDto {
 
   @IsOptional()
   @IsString()
+  homeAddress?: string;
+
+  @IsOptional()
+  @IsNumber()
+  homeLat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  homeLng?: number;
+
+  @IsOptional()
+  @IsString()
   grade?: string;
 
   @IsOptional()

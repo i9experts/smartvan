@@ -38,6 +38,18 @@ export class AddStudentDto {
   @IsOptional()
   image?: string;
 
+  @IsString()
+  @IsOptional()
+  homeAddress?: string;
+
+  @IsNumber()
+  @IsOptional()
+  homeLat?: number;
+
+  @IsNumber()
+  @IsOptional()
+  homeLng?: number;
+
    @IsString()
   @IsOptional()
   status?: string;
