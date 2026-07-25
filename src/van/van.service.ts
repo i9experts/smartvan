@@ -1246,58 +1246,66 @@ async removeDriversFromSchool(
 
   // 5️⃣ Send push notification to each driver
   for (const driver of drivers) {
-    const title = 'Removed from School';
-    const message = `You have been removed from the school by the admin.`;
+    try {
+      const title = 'Removed from School';
+      const message = `You have been removed from the school by the admin.`;
 
-    const van = await this.databaseService.repositories.VanModel.findOne({
-    driverId: driver._id,
-  });
+      const van = await this.databaseService.repositories.VanModel.findOne({
+        driverId: driver._id,
+      });
 
+      if (van && van.ownVan === true) {
+        // 👉 Sirf school se unlink
+        van.schoolId = null;
+        van.status = 'inActive';
+        driver.status = 'inActive';
+        driver.schoolId = null;
+        await van.save();
+        await driver.save();
 
-    if (van && van.ownVan === true) {
-      // 👉 Sirf school se unlink
-      van.schoolId = null;
-      van.status = 'inActive';
-      driver.status = 'inActive';
-      driver.schoolId = null;
-      await van.save();
-      await driver.save();
+      } 
 
-    } 
+      else {
+        driver.status = 'inActive';
+        driver.schoolId = null;
+        if (van) {
+          van.driverId = null;
+          await van.save();
+        }
+        await driver.save();
+      }
 
-    else {
-      driver.status = 'inActive';
-      driver.schoolId = null;
-      van.driverId = null;
-      await van.save();
-      await driver.save();
-}
-
-   
-    if (driver.fcmToken && driver.notificationToggle === true) {
-      await this.firebaseAdminService.sendToDevice(
-        driver.fcmToken,
-        {
-          notification: {
-            title,
-            body: message,
+      if (driver.fcmToken && driver.notificationToggle === true) {
+        await this.firebaseAdminService.sendToDevice(
+          driver.fcmToken,
+          {
+            notification: {
+              title,
+              body: message,
+            },
           },
-        },
-      );
-    }
+        );
+      }
 
-            // 💾 Save notification in DB
-    await this.databaseService.repositories.notificationModel.create({
-      type: 'admin',
-      schoolId: schoolIdString,
-      driverId: driver._id.toString(),
-      infoType: "Information",
-      title,
-      message,
-      actionType: 'VAN_STATUS_UPDATED',
-      status: 'sent',
-      date: new Date(),
-    });
+              // 💾 Save notification in DB
+      await this.databaseService.repositories.notificationModel.create({
+        type: 'admin',
+        schoolId: schoolIdString,
+        driverId: driver._id.toString(),
+        infoType: "Information",
+        title,
+        message,
+        actionType: 'VAN_STATUS_UPDATED',
+        status: 'sent',
+        date: new Date(),
+      });
+    } catch (err) {
+      // The core removal (schoolId nulled) already succeeded for every
+      // driver via the updateMany above — this per-driver cleanup/notify
+      // step is best-effort, so one driver's failure (e.g. a stale FCM
+      // token, or an unexpected van state) shouldn't crash the whole batch.
+      console.error(`Post-removal cleanup failed for driver ${driver._id}:`, err?.message || err);
+    }
   }
   
 
