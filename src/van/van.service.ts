@@ -1348,7 +1348,7 @@ async getAllDriversByAdmin(
     .find(query)
     .skip(skip)
     .limit(limit)
-    .select('fullname email phoneNo NIC status fcmToken image schoolId lastLoginAt isVerified createdAt')
+    .select('fullname email phoneNo alternatePhoneNo NIC address status fcmToken image schoolId lastLoginAt isVerified createdAt licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack expiryDateLicense expiryDateVehicleCard')
     .lean();
 
   // 3b️⃣ Look up each driver's assigned van (if any) — driverModel has no
