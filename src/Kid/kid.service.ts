@@ -95,6 +95,16 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
     throw err;
   }
 
+  // Sync the parent's own schoolId if it's not already set — this was
+  // previously never done anywhere in the self-registration flow (only
+  // admin-created parents got schoolId set directly), meaning a
+  // self-registered parent was invisible to any school-scoped parent
+  // query even though their kid was correctly linked to the school.
+  if (CreateKidDto.schoolId && !Parent.schoolId) {
+    Parent.schoolId = CreateKidDto.schoolId;
+    await Parent.save();
+  }
+
   // Step 5b: Notify the school (via WhatsApp) that a new student is
   // pending verification — fire-and-forget, never blocks kid creation.
   if (CreateKidDto.schoolId) {
