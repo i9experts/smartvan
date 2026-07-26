@@ -548,6 +548,148 @@ async getallschool() {
     data: updatedSchools,
   };
 }
+  // Bulk student upload. Reuses the same "find or create parent, block
+  // duplicate kid names per parent" logic as the single addKid flow below,
+  // but:
+  //  - resolves the school once instead of once per row
+  //  - deduplicates brand-new parent emails WITHIN the same batch, so two
+  //    rows sharing a parent who doesn't exist yet don't create two
+  //    separate parent accounts
+  //  - processes every row independently (try/catch per row) so one bad
+  //    row (missing field, bad email, duplicate name) never fails the
+  //    rest of the batch
+  async bulkAddStudents(rows: any[], AdminId: string) {
+    const adminObjectId = new Types.ObjectId(AdminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) {
+      throw new UnauthorizedException('School not found');
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new BadRequestException('No student rows were provided');
+    }
+    if (rows.length > 500) {
+      throw new BadRequestException('A single bulk upload is limited to 500 students. Please split into smaller batches.');
+    }
+
+    const results: Array<{
+      row: number;
+      fullname: string;
+      success: boolean;
+      message: string;
+      kidId?: string;
+    }> = [];
+
+    // Cache of parent docs resolved/created during THIS batch, keyed by
+    // lowercased email — avoids re-querying the DB for every row and
+    // avoids creating duplicate parent accounts for repeated emails.
+    const parentCache = new Map<string, any>();
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      const rowNumber = i + 1;
+      const fullname = (row.fullname ?? '').toString().trim();
+
+      try {
+        // ── Validate required fields ──────────────────────────────────
+        if (!fullname) {
+          throw new BadRequestException('Full name is required');
+        }
+        if (!row.grade || !row.grade.toString().trim()) {
+          throw new BadRequestException('Grade is required');
+        }
+        if (!row.gender || !row.gender.toString().trim()) {
+          throw new BadRequestException('Gender is required');
+        }
+        const parentEmail = (row.parentEmail ?? '').toString().trim().toLowerCase();
+        if (!parentEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parentEmail)) {
+          throw new BadRequestException('A valid parent email is required');
+        }
+
+        // ── Resolve or create the parent (cached within this batch) ───
+        let parent = parentCache.get(parentEmail);
+        let isNewParent = false;
+
+        if (!parent) {
+          parent = await this.databaseService.repositories.parentModel.findOne({ email: parentEmail });
+          isNewParent = !parent;
+
+          if (!parent) {
+            const username = parentEmail.split('@')[0];
+            const randomPassword = crypto.randomBytes(6).toString('hex');
+            const hashedPassword = await bcrypt.hash(randomPassword, 10);
+
+            await this.otpService.sendPassword(parentEmail, randomPassword);
+
+            parent = new this.databaseService.repositories.parentModel({
+              email: parentEmail,
+              fullname: username,
+              schoolId: school._id,
+              password: hashedPassword,
+              isVerified: true,
+              ...(row.parentPhone ? { phoneNo: row.parentPhone.toString().trim() } : {}),
+            });
+            parent = await parent.save();
+
+            if (row.parentPhone) {
+              this.whatsappService
+                .sendLoginCredentials(row.parentPhone.toString().trim(), username, parentEmail, randomPassword, school.schoolName)
+                .catch((err) => console.error('Bulk upload: new parent WhatsApp send failed:', err?.message || err));
+            }
+          }
+
+          parentCache.set(parentEmail, parent);
+        }
+
+        // ── Block duplicate kid name for this parent ──────────────────
+        const existingKid = await this.databaseService.repositories.KidModel.findOne({
+          parentId: parent._id,
+          fullname: { $regex: `^${fullname}$`, $options: 'i' },
+        });
+        if (existingKid) {
+          throw new BadRequestException(`"${fullname}" already exists for this parent`);
+        }
+
+        // ── Create the kid ─────────────────────────────────────────────
+        const newKid = new this.databaseService.repositories.KidModel({
+          fullname,
+          grade: row.grade.toString().trim(),
+          gender: row.gender.toString().trim(),
+          age: row.age ? Number(row.age) : undefined,
+          dob: row.dob ? new Date(row.dob) : undefined,
+          schoolId: school._id,
+          parentId: parent._id,
+        });
+        const savedKid = await newKid.save();
+
+        if (!isNewParent) {
+          this.notifyExistingParentOfNewStudent(parent, savedKid, school).catch(
+            (err) => console.error('Bulk upload: existing parent notify failed:', err?.message || err),
+          );
+        }
+
+        results.push({ row: rowNumber, fullname: fullname || '(no name)', success: true, message: 'Added successfully', kidId: savedKid._id.toString() });
+      } catch (err: any) {
+        results.push({
+          row: rowNumber,
+          fullname: fullname || '(no name)',
+          success: false,
+          message: err?.message || 'Failed to add this student',
+        });
+      }
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.length - successCount;
+
+    return {
+      message: `Bulk upload complete: ${successCount} added, ${failureCount} failed`,
+      successCount,
+      failureCount,
+      results,
+    };
+  }
+
   async addKid(AddStudentDto: AddStudentDto, AdminId: string, parentEmail: string, parentPhone?: string) {
 
 const adminObjectId = new Types.ObjectId(AdminId);

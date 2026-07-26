@@ -153,6 +153,20 @@ async getAllSchools(@Req() req: any) {
   }
   return this.adminService.getallschool();
 }
+
+// Bulk student upload — processes a whole batch in one request, reusing
+// the same parent-lookup-or-create and duplicate-kid-name logic as the
+// single addKid flow, but never lets one bad row fail the whole batch.
+@UseGuards(AuthGuard('jwt'))
+@Post('bulkAddStudents')
+async bulkAddStudents(
+  @Body('students') students: any[],
+  @Req() req: any,
+) {
+  const AdminId = req.user.userId;
+  return this.adminService.bulkAddStudents(students, AdminId);
+}
+
 @UseGuards(AuthGuard('jwt'))
 @Post('addStudent')
 async addKid(
