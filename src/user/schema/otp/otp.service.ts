@@ -464,8 +464,35 @@ export class OtpService {
   }
 }
 
-async sendPassword(toEmail: string, password: string): Promise<void> {
+async sendPassword(toEmail: string, password: string, accountType: 'admin' | 'parent' = 'admin'): Promise<void> {
   try {
+    const isParent = accountType === 'parent';
+    const introText = isParent
+      ? 'Your parent account has been created. Please use the password below to log in from the SmartVan mobile app:'
+      : 'Your admin account has been created. Please use the password below to log in:';
+
+    // Parents use the mobile app, not the admin web panel — a "Login Now"
+    // button pointing at the admin panel would land them on a login page
+    // for a product they can't actually use. Point them at the app instead.
+    const actionHtml = isParent
+      ? `
+            <div style="text-align:center; margin:30px 0;">
+              <p style="font-size:14px; color:#1a1a1a; font-weight:600; margin:0 0 6px;">
+                Open the SmartVan app on your phone to log in
+              </p>
+              <p style="font-size:13px; color:#666666; margin:0;">
+                Use your email and the password above
+              </p>
+            </div>`
+      : `
+            <div style="text-align:center; margin:30px 0;">
+              <a href="https://app.smartvan.pk/auth/login"
+                 style="background:#4a67f5; color:#ffffff; padding:12px 26px;
+                        text-decoration:none; border-radius:6px; font-size:14px;">
+                Login Now
+              </a>
+            </div>`;
+
     const emailHtml = `
     <!DOCTYPE html>
     <html>
@@ -493,7 +520,7 @@ async sendPassword(toEmail: string, password: string): Promise<void> {
           <td style="padding:30px; color:#333333;">
 
             <p style="font-size:14px;">
-              Your admin account has been created. Please use the password below to log in:
+              ${introText}
             </p>
 
             <!-- Password Box -->
@@ -518,14 +545,7 @@ async sendPassword(toEmail: string, password: string): Promise<void> {
               </tr>
             </table>
 
-            <!-- Login Button -->
-            <div style="text-align:center; margin:30px 0;">
-              <a href="https://app.smartvan.pk/auth/login"
-                 style="background:#4a67f5; color:#ffffff; padding:12px 26px;
-                        text-decoration:none; border-radius:6px; font-size:14px;">
-                Login Now
-              </a>
-            </div>
+            ${actionHtml}
 
             <p style="font-size:13px; color:#666666; line-height:1.6;">
               For security reasons, we recommend changing your password after logging in.

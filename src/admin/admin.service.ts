@@ -619,7 +619,7 @@ async getallschool() {
             const randomPassword = crypto.randomBytes(6).toString('hex');
             const hashedPassword = await bcrypt.hash(randomPassword, 10);
 
-            await this.otpService.sendPassword(parentEmail, randomPassword);
+            await this.otpService.sendPassword(parentEmail, randomPassword, 'parent');
 
             parent = new this.databaseService.repositories.parentModel({
               email: parentEmail,
@@ -714,7 +714,7 @@ const adminObjectId = new Types.ObjectId(AdminId);
 
   const hashedPassword = await bcrypt.hash(randomPassword, 10);
 
-  await this.otpService.sendPassword(parentEmail, randomPassword);
+  await this.otpService.sendPassword(parentEmail, randomPassword, 'parent');
 
     parent = new this.databaseService.repositories.parentModel({
       email: parentEmail,
