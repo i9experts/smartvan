@@ -1600,7 +1600,20 @@ async generateGraphData(
       .find(matchCondition)
       .lean();
 
-    if (!trips.length) {
+    // Start from the FULL active roster for this school (and van, if
+    // filtered), not just whichever kids happened to appear in a
+    // completed trip today. Previously, a student whose van never ran at
+    // all that day (driver absent, no trip started, etc.) had zero trip
+    // entries and was silently omitted entirely — not counted "absent",
+    // just missing — which shrank the denominator and made the
+    // attendance rate look artificially high on exactly the days it
+    // should have looked worse.
+    const rosterFilter: any = { status: 'active' };
+    if (resolvedSchoolId) rosterFilter.schoolId = resolvedSchoolId;
+    if (vanId) rosterFilter.VanId = vanId;
+    const rosterKids = await this.databaseService.repositories.KidModel.find(rosterFilter).lean();
+
+    if (!rosterKids.length) {
       return {
         message: 'Attendance report generated',
         date: targetDate.toISOString().split('T')[0],
@@ -1631,15 +1644,8 @@ async generateGraphData(
       }
     }
 
-    // Get unique kidIds
-    const uniqueKidIds = [...new Set(allKidEntries.map(e => e.kidId))];
-
-    // Fetch kid details
-    const kids = await this.databaseService.repositories.KidModel.find({
-      _id: { $in: uniqueKidIds.map(id => new Types.ObjectId(id)) },
-    }).lean();
-
-    const kidMap = new Map(kids.map((k: any) => [k._id.toString(), k]));
+    const uniqueKidIds = rosterKids.map((k: any) => k._id.toString());
+    const kidMap = new Map(rosterKids.map((k: any) => [k._id.toString(), k]));
 
     // Fetch van details
     const vanIds = [...new Set(trips.map(t => t.vanId))];
@@ -1662,7 +1668,9 @@ async generateGraphData(
 
       if (!pickEntry && !dropEntry) {
         attendanceStatus = 'absent';
-        remarks = 'No trip record found';
+        remarks = entries.length > 0
+          ? 'On the route but never marked picked up or dropped'
+          : 'No trip ran for this student\'s van today';
       } else if (pickEntry?.status === 'picked' || dropEntry?.status === 'dropped') {
         attendanceStatus = 'present';
         // Check if late — picked more than 15 mins after trip start
@@ -1722,14 +1730,23 @@ async generateGraphData(
     start.setHours(0, 0, 0, 0);
     const end = endDate ? new Date(endDate) : new Date();
     end.setHours(23, 59, 59, 999);
+    const MAX_RANGE_MS = 366 * 24 * 60 * 60 * 1000;
+    if (end.getTime() - start.getTime() > MAX_RANGE_MS) {
+      start.setTime(end.getTime() - MAX_RANGE_MS);
+    }
 
     const kid: any = await this.databaseService.repositories.KidModel.findById(kidId).lean();
     if (!kid) throw new Error('Student not found');
 
+    // Don't count days before this student was even enrolled as absences.
+    const enrolledAt = kid.createdAt ? new Date(kid.createdAt) : start;
+    const effectiveStart = enrolledAt > start ? enrolledAt : start;
+    effectiveStart.setHours(0, 0, 0, 0);
+
     const trips = await this.databaseService.repositories.TripModel.find({
       'kids.kidId': kidId,
       status: 'end',
-      createdAt: { $gte: start, $lte: end },
+      createdAt: { $gte: effectiveStart, $lte: end },
     }).lean();
 
     // Group by date
@@ -1751,15 +1768,31 @@ async generateGraphData(
       }
     }
 
-    const history = Object.values(byDate).map((day: any) => {
-      const hasPick = day.trips.some((t: any) => t.tripType === 'pick' && (t.status === 'picked' || t.status === 'dropped'));
-      const hasDrop = day.trips.some((t: any) => t.tripType === 'drop' && t.status === 'dropped');
-      return {
-        date: day.date,
-        attendanceStatus: hasPick || hasDrop ? 'present' : 'absent',
-        trips: day.trips,
-      };
-    }).sort((a: any, b: any) => b.date.localeCompare(a.date));
+    // Walk every calendar day in the range explicitly, rather than only
+    // the days where a trip happened to exist — a day with no trip data
+    // at all is a real absence (or at least "not transported"), not a
+    // day that should simply disappear from the report.
+    const history: any[] = [];
+    for (let d = new Date(effectiveStart); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateKey = d.toISOString().split('T')[0];
+      const day = byDate[dateKey];
+      if (day) {
+        const hasPick = day.trips.some((t: any) => t.tripType === 'pick' && (t.status === 'picked' || t.status === 'dropped'));
+        const hasDrop = day.trips.some((t: any) => t.tripType === 'drop' && t.status === 'dropped');
+        history.push({
+          date: dateKey,
+          attendanceStatus: hasPick || hasDrop ? 'present' : 'absent',
+          trips: day.trips,
+        });
+      } else {
+        history.push({
+          date: dateKey,
+          attendanceStatus: 'absent',
+          trips: [],
+        });
+      }
+    }
+    history.sort((a: any, b: any) => b.date.localeCompare(a.date));
 
     const totalDays = history.length;
     const presentDays = history.filter((h: any) => h.attendanceStatus === 'present').length;
