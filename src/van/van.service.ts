@@ -110,7 +110,25 @@ async getVans(userId: string, userType: string) {
 
 
 
-async addVanByAdmin(dto: CreateVanByAdminDto, adminId: string) {
+// Builds the backward-compatible display string ("Toyota Coaster", or
+  // "Toyota Coaster (Mid-Size Bus)" for anything other than a standard Van)
+  // from the new structured fields, so every existing screen that reads
+  // vehicleType directly keeps working unchanged. Only recomputes it when
+  // manufacturer + model are actually provided — otherwise leaves whatever
+  // vehicleType value was sent untouched, so this never breaks or
+  // silently blanks out a van that hasn't been updated to the new fields.
+  private computeVehicleType(dto: { vehicleType?: string; vehicleCategory?: string; manufacturer?: string; model?: string }): string | undefined {
+    if (!dto.manufacturer || !dto.model) {
+      return dto.vehicleType;
+    }
+    const base = `${dto.manufacturer} ${dto.model}`.trim();
+    if (dto.vehicleCategory && dto.vehicleCategory !== 'Van') {
+      return `${base} (${dto.vehicleCategory})`;
+    }
+    return base;
+  }
+
+  async addVanByAdmin(dto: CreateVanByAdminDto, adminId: string) {
     const adminObjectId = new Types.ObjectId(adminId);
 
   
@@ -123,7 +141,10 @@ async addVanByAdmin(dto: CreateVanByAdminDto, adminId: string) {
     const newVan = new this.databaseService.repositories.VanModel({
       
       schoolId: school._id,
-      vehicleType: dto.vehicleType,
+      vehicleType: this.computeVehicleType(dto),
+      vehicleCategory: dto.vehicleCategory,
+      manufacturer: dto.manufacturer,
+      model: dto.model,
       carNumber: dto.carNumber,
       condition: dto.condition,
       venCapacity: dto.venCapacity,
@@ -172,7 +193,10 @@ async addVanByAdmin(dto: CreateVanByAdminDto, adminId: string) {
   { _id: vanObjectId },
   {
     $set: {
-      vehicleType: dto.vehicleType,
+      vehicleType: this.computeVehicleType(dto),
+      vehicleCategory: dto.vehicleCategory,
+      manufacturer: dto.manufacturer,
+      model: dto.model,
       carNumber: dto.carNumber,
       condition: dto.condition,
       venCapacity: dto.venCapacity,

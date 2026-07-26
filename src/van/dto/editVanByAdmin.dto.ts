@@ -15,6 +15,18 @@ export class EditVanByAdminDto {
 
   @IsOptional()
   @IsString()
+  vehicleCategory?: string;
+
+  @IsOptional()
+  @IsString()
+  manufacturer?: string;
+
+  @IsOptional()
+  @IsString()
+  model?: string;
+
+  @IsOptional()
+  @IsString()
   carNumber?: string;
 
   @IsOptional()

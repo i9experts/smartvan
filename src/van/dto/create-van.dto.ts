@@ -23,6 +23,18 @@ export class CreateVanDto {
 
   @IsOptional()
   @IsString()
+  vehicleCategory?: string;
+
+  @IsOptional()
+  @IsString()
+  manufacturer?: string;
+
+  @IsOptional()
+  @IsString()
+  model?: string;
+
+  @IsOptional()
+  @IsString()
   deviceId?: string;
 
   @IsOptional()

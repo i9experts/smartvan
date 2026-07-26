@@ -8,6 +8,18 @@ export class CreateVanByAdminDto {
   @IsOptional()
   @IsString()
   vehicleType?: string; 
+
+  @IsOptional()
+  @IsString()
+  vehicleCategory?: string;
+
+  @IsOptional()
+  @IsString()
+  manufacturer?: string;
+
+  @IsOptional()
+  @IsString()
+  model?: string;
   
   @IsOptional()
   @IsString()

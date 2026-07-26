@@ -22,6 +22,21 @@ export class Van {
   @Prop({ required: false })
   vehicleType?: string;
 
+  // Structured vehicle fields — replaces a single free-text/flat-dropdown
+  // "vehicleType" as the primary source of truth going forward, so new
+  // vehicle models never require a software change. vehicleType itself is
+  // kept and auto-computed from these (e.g. "Toyota Coaster") whenever a
+  // van is created/edited via the new form, so every existing screen that
+  // already reads vehicleType keeps working completely unchanged.
+  @Prop({ required: false })
+  vehicleCategory?: string;
+
+  @Prop({ required: false })
+  manufacturer?: string;
+
+  @Prop({ required: false })
+  model?: string;
+
   @Prop({ required: false })
   deviceId?: string;
 
