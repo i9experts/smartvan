@@ -520,7 +520,7 @@ async sendPassword(toEmail: string, password: string): Promise<void> {
 
             <!-- Login Button -->
             <div style="text-align:center; margin:30px 0;">
-              <a href="https://smartvanride.com/auth/signin"
+              <a href="https://app.smartvan.pk/auth/login"
                  style="background:#4a67f5; color:#ffffff; padding:12px 26px;
                         text-decoration:none; border-radius:6px; font-size:14px;">
                 Login Now

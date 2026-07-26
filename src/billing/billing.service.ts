@@ -142,8 +142,8 @@ export class BillingService {
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'subscription',
-      success_url: `${process.env.FRONTEND_URL || 'https://smartvanride.com'}/billing?success=true`,
-      cancel_url: `${process.env.FRONTEND_URL || 'https://smartvanride.com'}/billing?cancelled=true`,
+      success_url: `${process.env.FRONTEND_URL || 'https://app.smartvan.pk'}/billing?success=true`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://app.smartvan.pk'}/billing?cancelled=true`,
       metadata: {
         adminId,
         schoolId: bill.schoolId.toString(),

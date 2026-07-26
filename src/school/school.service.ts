@@ -89,7 +89,7 @@ export class SchoolService {
                 ${body.challenges ? `<tr><td style="padding:8px 0;color:#6b7280;vertical-align:top">Challenges</td><td style="padding:8px 0;color:#1a1a2e">${body.challenges}</td></tr>` : ''}
               </table>
               <div style="margin-top:20px;text-align:center">
-                <a href="https://smartvanride.com/auth/login" style="background:#1B2B6B;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">View in Admin Panel →</a>
+                <a href="https://app.smartvan.pk/auth/login" style="background:#1B2B6B;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">View in Admin Panel →</a>
               </div>
             </div>
           </div>
@@ -183,7 +183,7 @@ export class SchoolService {
               '<p style="color:#FFB800;font-size:24px;font-weight:800;letter-spacing:3px;margin:0">' + randomPassword + '</p>' +
               '</div>' +
               '<div style="text-align:center;margin:20px 0">' +
-              '<a href="https://smartvanride.com/auth/login" style="background:#FFB800;color:#1B2B6B;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Login to Admin Panel →</a>' +
+              '<a href="https://app.smartvan.pk/auth/login" style="background:#FFB800;color:#1B2B6B;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Login to Admin Panel →</a>' +
               '</div>' +
               '<p style="color:#6b7280;font-size:13px;line-height:1.7">Please change your password after first login. If you need any help, reply to this email or WhatsApp us.</p>' +
               '<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">' +
