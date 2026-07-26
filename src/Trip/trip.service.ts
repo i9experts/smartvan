@@ -1647,8 +1647,21 @@ async generateGraphData(
     const uniqueKidIds = rosterKids.map((k: any) => k._id.toString());
     const kidMap = new Map(rosterKids.map((k: any) => [k._id.toString(), k]));
 
-    // Fetch van details
-    const vanIds = [...new Set(trips.map(t => t.vanId))];
+    // Fetch parent contact info — the whole point of a follow-up report
+    // is being able to actually call the parent of an absent student.
+    const parentIds = [...new Set(rosterKids.map((k: any) => k.parentId?.toString()).filter(Boolean))];
+    const parents = await this.databaseService.repositories.parentModel.find({
+      _id: { $in: parentIds.map(id => new Types.ObjectId(id)) },
+    }).lean();
+    const parentMap = new Map(parents.map((p: any) => [p._id.toString(), p]));
+
+    // Fetch van details — include every roster kid's own assigned van too,
+    // not just vans that had a trip today, so a student whose van never
+    // ran still shows their real van number instead of "N/A".
+    const vanIds = [...new Set([
+      ...trips.map(t => t.vanId),
+      ...rosterKids.map((k: any) => k.VanId).filter(Boolean),
+    ])];
     const vans = await this.databaseService.repositories.VanModel.find({
       _id: { $in: vanIds.map(id => new Types.ObjectId(id)) },
     }).lean();
@@ -1660,7 +1673,8 @@ async generateGraphData(
       const entries = allKidEntries.filter(e => e.kidId === kidId);
       const pickEntry = entries.find(e => e.tripType === 'pick');
       const dropEntry = entries.find(e => e.tripType === 'drop');
-      const van: any = vanMap.get(entries[0]?.vanId);
+      const van: any = vanMap.get(entries[0]?.vanId) ?? (kid?.VanId ? vanMap.get(kid.VanId) : undefined);
+      const parent: any = kid?.parentId ? parentMap.get(kid.parentId.toString()) : undefined;
 
       // Determine attendance status
       let attendanceStatus = 'present';
@@ -1691,6 +1705,8 @@ async generateGraphData(
         image: kid?.image || null,
         schoolId: entries[0]?.schoolId,
         vanNumber: van?.carNumber || 'N/A',
+        parentName: parent?.fullname || 'Unknown',
+        parentPhone: parent?.phoneNo || '',
         attendanceStatus,
         remarks,
         pickupTime: pickEntry?.time || null,
