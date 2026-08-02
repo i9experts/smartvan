@@ -18,6 +18,7 @@ import { UseGuards } from '@nestjs/common';
 import { AddStudentDto } from './dto/addStudent.dto';
 import { EditStudentDto } from './dto/editStudent.dto';
 import { KidService } from 'src/Kid/kid.service';
+import { DatabaseService } from 'src/database/databaseservice';
 
 
 @Controller('Admin')
@@ -25,7 +26,29 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly kidService: KidService,   // 👈 inject KidService here
+    private readonly databaseService: DatabaseService,
   ) {}
+
+  // school_staff callers don't have an admin account of their own —
+  // resolve their school's actual admin so existing admin-scoped service
+  // logic works completely unchanged for them too, matching the same
+  // pattern already used in VanController and ReportController.
+  private async resolveEffectiveAdminId(user: any): Promise<string> {
+    if (user.role === 'admin') return user.userId;
+    if (user.role === 'school_staff') {
+      const school = await this.databaseService.repositories.SchoolModel.findById(user.schoolId);
+      if (!school) throw new UnauthorizedException('School not found for this staff account');
+      return school.admin.toString();
+    }
+    throw new UnauthorizedException('Invalid role for this action');
+  }
+
+  private requireStudentsPermission(user: any) {
+    if (user.role === 'admin') return;
+    if (user.role === 'school_staff' && (user.permissions || []).includes('manage_students')) return;
+    throw new UnauthorizedException('Insufficient permissions');
+  }
+
   @UseGuards(AuthGuard('jwt'))
 @Post('create-admin-school')
 async createAdminAndSchool(@Req() req, @Body() body: any) {
@@ -163,7 +186,8 @@ async bulkAddStudents(
   @Body('students') students: any[],
   @Req() req: any,
 ) {
-  const AdminId = req.user.userId;
+  this.requireStudentsPermission(req.user);
+  const AdminId = await this.resolveEffectiveAdminId(req.user);
   return this.adminService.bulkAddStudents(students, AdminId);
 }
 
@@ -175,7 +199,8 @@ async addKid(
   @Body('parentPhone') parentPhone: string, // optional — enables WhatsApp for brand-new parents
   @Req() req: any,
 ) {
-  const AdminId = req.user.userId;
+  this.requireStudentsPermission(req.user);
+  const AdminId = await this.resolveEffectiveAdminId(req.user);
   return this.adminService.addKid(AddStudentDto , AdminId, parentEmail, parentPhone);
 }
 
@@ -186,7 +211,8 @@ async editKid(
   @Body('KidId') KidId: string, // alag se lo
   @Req() req: any,
 ) {
-  const AdminId = req.user.userId;
+  this.requireStudentsPermission(req.user);
+  const AdminId = await this.resolveEffectiveAdminId(req.user);
   return this.adminService.editStudent(KidId , AdminId, EditStudentDto );
 }
 
@@ -218,12 +244,8 @@ async getAllParents(
     @Query('limit') limit: string,
     @Query('search') search?: string,
   ) {
-    // JWT token se AdminId nikal lo
-    const adminId = req.user.userId; // assuming AuthGuard ne req.user me user data daala
-
-    if (!adminId) {
-      throw new UnauthorizedException('Admin not found in token');
-    }
+    this.requireStudentsPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
 
     // page aur limit ko number me convert karo
     const pageNumber = page ? parseInt(page) : 1;
@@ -241,11 +263,8 @@ async getAllParents(
     @Req() req: any,
     @Body('kidIds') kidIds: string[], // array of kidIds
   ) {
-    const adminId = req.user.userId;
-
-    if (!adminId) {
-      throw new UnauthorizedException('Admin not found in token');
-    }
+    this.requireStudentsPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
 
     if (!kidIds || !Array.isArray(kidIds) || kidIds.length === 0) {
       throw new UnauthorizedException('kidIds must be a non-empty array');
