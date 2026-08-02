@@ -71,6 +71,51 @@ const kid = await this.databaseService.repositories.KidModel.findOne({
   };
 }
 
+// A school admin submitting a ticket about the platform itself — bugs,
+// feature requests, support, training — directly to the superadmin.
+// Distinct from parent/driver reports, which are operational complaints
+// about the van service and should stay within the school, never reach
+// the superadmin's queue at all.
+async createReportByAdmin(body: any, adminId: string) {
+  if (!adminId) {
+    throw new UnauthorizedException('Invalid admin token');
+  }
+
+  const { issueType, description, image, audio, video } = body;
+
+  if (!issueType || !description) {
+    throw new BadRequestException('Category and description are required');
+  }
+
+  const adminObjectId = new Types.ObjectId(adminId);
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: adminObjectId,
+  });
+
+  if (!school) {
+    throw new BadRequestException('School not found for this admin');
+  }
+
+  const report = new this.databaseService.repositories.reportModel({
+    adminId: adminId,
+    schoolId: school._id.toString(),
+    issueType,
+    type: 'adminReport',
+    description,
+    image,
+    audio,
+    video,
+    createdAt: new Date(),
+  });
+
+  await report.save();
+
+  return {
+    message: 'Ticket submitted successfully',
+    data: report,
+  };
+}
+
 async createDriverReport(body: any, driverId: string) {
   if (!driverId) {
     throw new UnauthorizedException('Invalid driver token');
@@ -140,6 +185,10 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
 
       if (!school) throw new UnauthorizedException("Invalid admin or school not found");
       matchFilter.schoolId = school._id.toString();
+      // This view is for parent complaints and driver-reported issues about
+      // the school's own operations — not the admin's own outbound platform
+      // tickets to the superadmin, which are a conceptually separate thing.
+      matchFilter.type = { $ne: "adminReport" };
     } else if (userType === "superadmin") {
       matchFilter = {}; // no restriction
     } else {
@@ -147,7 +196,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
     }
 
 
-    if (typeFilter && ["driverReport", "parentReport"].includes(typeFilter)) {
+    if (typeFilter && ["driverReport", "parentReport", "adminReport"].includes(typeFilter)) {
       matchFilter.type = typeFilter;
     }
 
@@ -232,6 +281,29 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
       },
       { $unwind: { path: "$parent", preserveNullAndEmptyArrays: true } },
 
+      // Admin lookup (for admin-submitted platform tickets)
+      {
+        $lookup: {
+          from: "admins",
+          let: { admId: "$adminId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $ne: ["$$admId", null] },
+                    { $eq: ["$_id", { $toObjectId: "$$admId" }] },
+                  ],
+                },
+              },
+            },
+            { $project: { name: 1, email: 1 } },
+          ],
+          as: "reportingAdmin",
+        },
+      },
+      { $unwind: { path: "$reportingAdmin", preserveNullAndEmptyArrays: true } },
+
       // Kid lookup
       {
         $lookup: {
@@ -302,6 +374,8 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
           parentPhone: { $cond: [{ $ne: ["$type", "driverReport"] }, "$parent.phoneNo", "$$REMOVE"] },
           parentEmail: { $cond: [{ $ne: ["$type", "driverReport"] }, "$parent.email", "$$REMOVE"] },
           kidName: { $cond: [{ $ne: ["$type", "driverReport"] }, "$kid.fullname", "$$REMOVE"] },
+          adminName: "$reportingAdmin.name",
+          adminEmail: "$reportingAdmin.email",
         },
       },
 
@@ -455,6 +529,24 @@ async changeComplaintStatus(
         date: new Date(),
       });
     }
+  }
+
+  if (report.adminId) {
+    // No push/email channel exists yet for admin-panel notifications
+    // (this is a web app, not a mobile app with FCM) — saving the
+    // record now so a future in-panel notification feed has the data.
+    // In the meantime, the admin checks status directly via My Tickets.
+    await this.databaseService.repositories.notificationModel.create({
+      type: "admin",
+      schoolId: schoolId,
+      adminId: report.adminId,
+      infoType: "Information",
+      title: "Ticket Status Updated",
+      message: `Your ticket status has been updated to ${newStatus}.`,
+      actionType: "TICKET_STATUS_UPDATE",
+      status: "sent",
+      date: new Date(),
+    });
   }
 
 

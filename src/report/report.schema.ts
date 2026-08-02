@@ -19,6 +19,9 @@ export class Report {
   @Prop({ required: false })
   driverId?: string;
 
+  @Prop({ required: false })
+  adminId?: string;
+
    @Prop({ default: "pending" })
   status?: string;
 
