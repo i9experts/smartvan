@@ -37,6 +37,16 @@ export class FeesController {
       return providedSchoolId;
     }
 
+    if (req.user?.role === 'school_staff') {
+      if (!(req.user.permissions || []).includes('manage_fees')) {
+        throw new UnauthorizedException('Insufficient permissions');
+      }
+      if (!req.user.schoolId) {
+        throw new UnauthorizedException('School not found for this staff account');
+      }
+      return req.user.schoolId;
+    }
+
     const adminId = req.user?.userId;
     if (!adminId) {
       throw new UnauthorizedException('Invalid session');

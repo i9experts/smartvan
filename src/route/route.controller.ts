@@ -1,21 +1,42 @@
 /* eslint-disable prettier/prettier */
 
-import { Controller, Post, Body, Req, Get, Query, NotFoundException, Param } from '@nestjs/common';
+import { Controller, Post, Body, Req, Get, Query, NotFoundException, Param, UnauthorizedException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { RouteService } from './route.service'
 import { CreateRouteDto } from './dto/createRoutedto';
+import { DatabaseService } from 'src/database/databaseservice';
 
 
 @Controller('Route')
 export class routeController {
-  constructor(private readonly routetService: RouteService) {}
+  constructor(
+    private readonly routetService: RouteService,
+    private readonly databaseService: DatabaseService,
+  ) {}
+
+  private async resolveEffectiveAdminId(user: any): Promise<string> {
+    if (user.role === 'admin') return user.userId;
+    if (user.role === 'school_staff') {
+      const school = await this.databaseService.repositories.SchoolModel.findById(user.schoolId);
+      if (!school) throw new UnauthorizedException('School not found for this staff account');
+      return school.admin.toString();
+    }
+    throw new UnauthorizedException('Invalid role for this action');
+  }
+
+  private requireRoutesPermission(user: any) {
+    if (user.role === 'admin') return;
+    if (user.role === 'school_staff' && (user.permissions || []).includes('manage_routes')) return;
+    throw new UnauthorizedException('Insufficient permissions');
+  }
 
 
  @UseGuards(AuthGuard('jwt'))
   @Post("createRoute")
 async createRoute(@Body() dto: CreateRouteDto, @Req() req) {
-  const adminId = req.user.userId; // token se admin ka id
+  this.requireRoutesPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user); // token se admin ka id
   return this.routetService.createRoute(dto, adminId);
 }
 
@@ -34,12 +55,8 @@ async getRoutes(
   @Query('limit') limit: string,
   @Query() query: any,
 ) {
-  // JWT se adminId nikal lo
-  const adminId = req.user.userId;
-
-  if (!adminId) {
-    throw new NotFoundException ('Admin not found in token');
-  }
+  this.requireRoutesPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
 
   // pagination values parse karo
   const pageNumber = page ? parseInt(page) : 1;
@@ -65,7 +82,8 @@ async editRoute(
   @Body('routeId') routeId: string,  // routeId alag se body me aayega
   @Body() dto: CreateRouteDto        // baaki fields dto se aayengi
 ) {
-  const adminId = req.user.userId;
+  this.requireRoutesPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
   return this.routetService.editRoute(adminId, routeId, dto);
 }
 
@@ -100,7 +118,8 @@ async deleteRouteByAdmin(
   @Req() req: any,
   @Body('routeId') routeId: string
 ) {
-  const adminId = req.user.userId;
+  this.requireRoutesPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
 
   return this.routetService.deleteRouteByAdmin(adminId, routeId);
 }

@@ -7,10 +7,20 @@ import { EndTripDto } from './dto/tripend.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { getLocationDto } from './dto/getLocations';
+import { DatabaseService } from 'src/database/databaseservice';
 
 @Controller('trips')
 export class TripController {
-  constructor(private readonly tripService: TripService) {}
+  constructor(
+    private readonly tripService: TripService,
+    private readonly databaseService: DatabaseService,
+  ) {}
+
+  private requireAttendancePermission(user: any) {
+    if (user.role === 'admin' || user.role === 'superadmin') return;
+    if (user.role === 'school_staff' && (user.permissions || []).includes('view_attendance')) return;
+    throw new UnauthorizedException('Insufficient permissions');
+  }
 
   @UseGuards(AuthGuard('jwt'))
   @Post('startTrip')
@@ -134,6 +144,26 @@ export class TripController {
     @Query('vanId') vanId?: string,
     @Query('schoolId') schoolId?: string,
   ) {
+    this.requireAttendancePermission(req.user);
+
+    if (req.user.role === 'school_staff') {
+      // The service's own resolution only recognizes adminRole === 'admin'
+      // to look up a school via an admin account. A staff member already
+      // carries their schoolId directly, so pass it straight through and
+      // present as 'admin' so the service uses the schoolId we resolved
+      // here (via the school lookup below) instead of trying to find an
+      // admin account for the staff member's own id (which doesn't exist).
+      const school = await this.databaseService.repositories.SchoolModel.findById(req.user.schoolId);
+      if (!school) throw new UnauthorizedException('School not found for this staff account');
+      return this.tripService.getDailyAttendance(
+        school.admin.toString(),
+        'admin',
+        date,
+        vanId,
+        schoolId,
+      );
+    }
+
     return this.tripService.getDailyAttendance(
       req.user.userId,
       req.user.role,

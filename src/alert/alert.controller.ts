@@ -7,11 +7,13 @@ import {
   Get,
   BadRequestException,
   Query,
-  Param
+  Param,
+  UnauthorizedException,
 
   
 
 } from '@nestjs/common';
+import { DatabaseService } from 'src/database/databaseservice';
 
 
 import { alertService } from './alert.service';
@@ -21,7 +23,27 @@ import { UseGuards } from '@nestjs/common';
 
 @Controller('alert')
 export class AlertController {
-  constructor(private readonly AlertService: alertService) {}
+  constructor(
+    private readonly AlertService: alertService,
+    private readonly databaseService: DatabaseService,
+  ) {}
+
+  private async resolveEffectiveAdminId(user: any): Promise<string> {
+    if (user.role === 'admin') return user.userId;
+    if (user.role === 'school_staff') {
+      const school = await this.databaseService.repositories.SchoolModel.findById(user.schoolId);
+      if (!school) throw new UnauthorizedException('School not found for this staff account');
+      return school.admin.toString();
+    }
+    throw new UnauthorizedException('Invalid role for this action');
+  }
+
+  private requireAlertsPermission(user: any) {
+    if (user.role === 'admin') return;
+    if (user.role === 'school_staff' && (user.permissions || []).includes('view_alerts')) return;
+    throw new UnauthorizedException('Insufficient permissions');
+  }
+
 
 
   @UseGuards(AuthGuard('jwt'))
@@ -557,7 +579,8 @@ async getDriverAlertsForAdmin(
   @Query('page') page: string,
   @Query('limit') limit: string,
 ) {
-  const adminId = req.user.userId;
+  this.requireAlertsPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
   const pageNumber = page ? parseInt(page) : 1;
   const limitNumber = limit ? parseInt(limit) : 10;
   return this.AlertService.getDriverAlertsForAdmin(adminId, pageNumber, limitNumber);
