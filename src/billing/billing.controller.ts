@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Body, Req, UseGuards, Headers, RawBodyRequest } from '@nestjs/common';
+import { Controller, Get, Post, Body, Req, UseGuards, Headers, RawBodyRequest, UnauthorizedException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { BillingService } from './billing.service';
 import { Request } from 'express';
@@ -34,7 +34,10 @@ export class BillingController {
 
   @UseGuards(AuthGuard('jwt'))
   @Get('all-schools')
-  async getAllSchoolsBilling() {
+  async getAllSchoolsBilling(@Req() req: any) {
+    if (!req.user || req.user.role !== 'superadmin') {
+      throw new UnauthorizedException('Only superadmins can access this API');
+    }
     return this.billingService.getAllSchoolsBilling();
   }
 
