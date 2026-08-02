@@ -61,12 +61,8 @@ export class AlertController {
     @Query('page') page: string,
     @Query('limit') limit: string
   ) {
-    // JWT se adminId nikal lo (agar zarurat ho)
-    const adminId = req.user.userId;
-
-    if (!adminId) {
-      throw new BadRequestException('Admin not found in token');
-    }
+    this.requireAlertsPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
 
     // pagination values parse karo
     const pageNumber = page ? parseInt(page) : 1;
