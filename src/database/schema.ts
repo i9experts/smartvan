@@ -13,4 +13,5 @@ export { Invoice, InvoiceDocument, InvoiceSchema } from '../invoice/invoice.sche
 export { PromotionBanner, PromotionBannerDocument, PromotionBannerSchema } from '../promotion-banner/promotion-banner.schema'
 export { Support, SupportDocument, SupportSchema } from '../alert/support.schema';
 export { Employee, EmployeeDocument, EmployeeSchema } from '../employee/employee.schema';
+export { SchoolStaff, SchoolStaffDocument, SchoolStaffSchema } from '../school-staff/school-staff.schema';
 export { AuditLog, AuditLogDocument, AuditLogSchema } from '../audit-log/audit-log.schema';

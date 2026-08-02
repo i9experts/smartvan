@@ -42,6 +42,8 @@ export class DatabaseService {
     private SupportModel: Model<schema.SupportDocument>,
       @InjectModel(schema.Employee.name)
     private EmployeeModel: Model<schema.EmployeeDocument>,
+      @InjectModel(schema.SchoolStaff.name)
+    private SchoolStaffModel: Model<schema.SchoolStaffDocument>,
       @InjectModel(schema.AuditLog.name)
     private AuditLogModel: Model<schema.AuditLogDocument>,
      ) {}
@@ -62,6 +64,7 @@ export class DatabaseService {
       PromotionBannerModel: this.PromotionBannerModel,
       supportModel: this.SupportModel,
       employeeModel: this.EmployeeModel,
+      schoolStaffModel: this.SchoolStaffModel,
       auditLogModel: this.AuditLogModel
         };
   }

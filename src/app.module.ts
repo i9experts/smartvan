@@ -28,6 +28,7 @@ import { BillingModule } from './billing/billing.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ComplianceModule } from './compliance/compliance.module';
 import { EmployeeModule } from './employee/employee.module';
+import { SchoolStaffModule } from './school-staff/school-staff.module';
 import { AuditLogModule } from './audit-log/audit-log.module';
 import { SearchModule } from './search/search.module';
 import { ContactController } from './admin/contact.controller';
@@ -63,6 +64,7 @@ import { ContactController } from './admin/contact.controller';
     ScheduleModule.forRoot(),
     ComplianceModule,
     EmployeeModule,
+    SchoolStaffModule,
     AuditLogModule,
     SearchModule,
   ],

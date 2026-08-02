@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req,Get, Patch, Query, BadRequestException, Param,  } from '@nestjs/common';
+import { Body, Controller, Post, Req,Get, Patch, Query, BadRequestException, Param, UnauthorizedException, } from '@nestjs/common';
 import { VanService } from './van.service';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
@@ -7,13 +7,40 @@ import { CreateVanDto } from './dto/create-van.dto';
 import { CreateVanByAdminDto } from './dto/createVanByAdmin.dto';
 import { EditVanByAdminDto } from './dto/editVanByAdmin.dto';
 import { EditDriverDto } from './dto/editDriver.dto';
+import { DatabaseService } from 'src/database/databaseservice';
 
 
 
 
 @Controller('van')
 export class VanController {
-  constructor(private readonly vanService: VanService) {}
+  constructor(
+    private readonly vanService: VanService,
+    private readonly databaseService: DatabaseService,
+  ) {}
+
+  // For a school_staff caller, existing service methods expect an adminId
+  // (they resolve the school via SchoolModel.findOne({ admin: adminId })).
+  // Staff don't have an admin account — they have their own schoolId
+  // directly. Rather than refactoring every service method to accept a
+  // schoolId directly, resolve the school's actual admin here and pass
+  // that through, so all existing service logic works completely
+  // unchanged for staff too.
+  private async resolveEffectiveAdminId(user: any): Promise<string> {
+    if (user.role === 'admin') return user.userId;
+    if (user.role === 'school_staff') {
+      const school = await this.databaseService.repositories.SchoolModel.findById(user.schoolId);
+      if (!school) throw new UnauthorizedException('School not found for this staff account');
+      return school.admin.toString();
+    }
+    throw new UnauthorizedException('Invalid role for this action');
+  }
+
+  private requireFleetPermission(user: any) {
+    if (user.role === 'admin') return;
+    if (user.role === 'school_staff' && (user.permissions || []).includes('manage_fleet')) return;
+    throw new UnauthorizedException('Insufficient permissions');
+  }
 
   @UseGuards(AuthGuard('jwt'))
   @Post('addVan')
@@ -75,7 +102,8 @@ async addVanByAdmin(
   @Body() CreateVanByAdminDto : CreateVanByAdminDto , 
   @Req() req: any,
 ) {
-  const AdminId = req.user.userId;
+  this.requireFleetPermission(req.user);
+  const AdminId = await this.resolveEffectiveAdminId(req.user);
   return this.vanService.addVanByAdmin(CreateVanByAdminDto , AdminId);
 }
 
@@ -86,8 +114,8 @@ async editVanByAdmin(
 @Body() EditVanByAdminDto: EditVanByAdminDto,
   @Req() req: any,
 ) {
-  const AdminId = req.user.userId;
-console.log(AdminId)
+  this.requireFleetPermission(req.user);
+  const AdminId = await this.resolveEffectiveAdminId(req.user);
   return this.vanService.editVanByAdmin(EditVanByAdminDto, AdminId);
 }
   @UseGuards(AuthGuard('jwt'))
@@ -99,11 +127,8 @@ console.log(AdminId)
     @Query('search') search?: string,
     @Query('vanOwn') vanOwn?: string, // string aayega, hum convert karenge
   ) {
-    const adminId = req.user?.userId;
-
-    if (!adminId) {
-      throw new BadRequestException('Admin not found in token');
-    }
+    this.requireFleetPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
 
     // 🔹 Pagination
     const pageNumber = page ? parseInt(page) : 1;
@@ -132,12 +157,8 @@ console.log(AdminId)
     @Query('search') search?: string,
     @Query('status') status?: 'active' | 'inActive', // optional status filter
   ) {
-    // JWT token se AdminId nikal lo
-    const adminId = req.user.userId; // assuming AuthGuard ne req.user me user data daala
-
-    if (!adminId) {
-      throw new BadRequestException('Admin not found in token');
-    }
+    this.requireFleetPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
 
     // page aur limit ko number me convert karo
     const pageNumber = page ? parseInt(page) : 1;
@@ -174,7 +195,8 @@ async changeVanStatus(
   @Req() req: any,
   @Body() body: { vanIds: string[]; status: string },
 ) {
-  const adminId = req.user.userId;
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
   const { vanIds, status } = body;
 
   return this.vanService.updateVanStatusByAdmin(
@@ -188,7 +210,9 @@ async changeVanStatus(
 @UseGuards(AuthGuard('jwt'))
 @Post('addDriverByAdmin')
 async addDriverByAdmin(@Req() req: any, @Body() body: any) {
-  return this.vanService.addDriverByAdmin(req.user.userId, body);
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.vanService.addDriverByAdmin(adminId, body);
 }
 
 @UseGuards(AuthGuard('jwt'))
@@ -197,8 +221,10 @@ async resetDriverPassword(
   @Req() req: any,
   @Body() body: { driverId: string; newPassword?: string },
 ) {
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
   return this.vanService.resetDriverPassword(
-    req.user.userId,
+    adminId,
     body.driverId,
     body.newPassword,
   );
@@ -210,7 +236,8 @@ async removeDriverFromVan(
   @Req() req: any,
   @Body() body: { vanId: string },
 ) {
-  const adminId = req.user.userId;
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
   const vanId = body.vanId;  
 
   return this.vanService.removeDriverFromVan(vanId, adminId);
@@ -236,7 +263,8 @@ async editDriverByAdmin(
   @Body('driverId') driverId: string,
   @Body() editDto: EditDriverDto,
 ) {
-  const adminId = req.user.userId;
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
   return this.vanService.editDriverByAdmin(adminId, driverId, editDto);
 }
 
