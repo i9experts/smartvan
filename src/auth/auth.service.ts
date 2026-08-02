@@ -26,18 +26,33 @@ export class AuthService {
   ) {}
 
 
-  private getUserModel(userType: string) {
-  return userType === 'parent'
-    ? this.databaseService.repositories.parentModel
-    : this.databaseService.repositories.driverModel;
-}
+  private async getUserModel(userType: string, userId?: string) {
+    if (userType === 'parent') return this.databaseService.repositories.parentModel;
+    if (userType === 'driver') return this.databaseService.repositories.driverModel;
+
+    // userType wasn't reliably one of the two expected values — this
+    // previously silently defaulted to driverModel for ANY other value,
+    // meaning a parent whose userType claim was ever missing/wrong would
+    // have their own profile looked up in the wrong collection entirely,
+    // fail with "User not found", and (since load errors were handled
+    // silently on the frontend) show as a completely blank profile with
+    // no error shown at all. Verify which model the account actually
+    // exists in instead of guessing.
+    if (userId) {
+      const parent = await this.databaseService.repositories.parentModel.findById(userId).select('_id');
+      if (parent) return this.databaseService.repositories.parentModel;
+      const driver = await this.databaseService.repositories.driverModel.findById(userId).select('_id');
+      if (driver) return this.databaseService.repositories.driverModel;
+    }
+    return this.databaseService.repositories.driverModel;
+  }
 
   // ✅ Signup
 async registerUser(registerDto: RegisterDto) {
   try {
     const { email, password, userType } = registerDto;
 
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType);
 
     // Check if user already exists
     const existingUser = await userModel.findOne({ email });
@@ -118,7 +133,7 @@ async loginUser(loginData: any) {
 
     console.log("llllllllllll", loginData)
 
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType);
 
     // Accept login via email, phone number, or CNIC (NIC) — drivers in
     // particular often can't manage email/OTP, so phone/CNIC + a
@@ -201,7 +216,7 @@ async loginUser(loginData: any) {
 
 async resendOtp(email: string, userType: string) {
   try {
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType);
     const user = await userModel.findOne({ email });
 
     if (!user) {
@@ -237,7 +252,7 @@ async resendOtp(email: string, userType: string) {
 
 async verifyOtp(email: string, userType: string, otp: string) {
   try {
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType);
     const user = await userModel.findOne({ email });
 
     if (!user) {
@@ -286,7 +301,7 @@ async verifyOtp(email: string, userType: string, otp: string) {
 
 async verifyOtpForgot(email: string, userType: string, otp: string) {
   try {
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType);
     const user = await userModel.findOne({ email });
 
     if (!user) {
@@ -317,12 +332,12 @@ async verifyOtpForgot(email: string, userType: string, otp: string) {
 
 async getProfile(userId: string, userType: string) {
   try {
-    if (!userId || !userType) {
+    if (!userId) {
       throw new UnauthorizedException('Invalid user credentials');
     }
 
     // ✅ 1. Select correct model
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType, userId);
 
     // ✅ 2. Find user
     const user = await userModel
@@ -409,7 +424,7 @@ async socialLogin(
       );
     }
 
-    const model = this.getUserModel(userType);
+    const model = await this.getUserModel(userType);
 
     /**
      * Pehle user ko providerId ya email se find karo.
@@ -579,7 +594,7 @@ async socialLogin(
 async forgotPassword(email: string, userType: string) {
   try {
     
-    const model = this.getUserModel(userType);
+    const model = await this.getUserModel(userType);
 
  
     const user = await model.findOne({ email });
@@ -617,7 +632,7 @@ async forgotPassword(email: string, userType: string) {
 async resetPassword(email: string, userType: string, otp: string, newPassword: string) {
   try {
     // 🔍 Model choose karo
-    const model = this.getUserModel(userType);
+    const model = await this.getUserModel(userType);
 
     // 🔍 User dhoondo
     const user = await model.findOne({ email });
@@ -655,7 +670,7 @@ async resetPassword(email: string, userType: string, otp: string, newPassword: s
  
 async resendOtpForResetPassword(email: string, userType: string) {
   try {
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType);
     const user = await userModel.findOne({ email });
 
     if (!user) {
@@ -802,7 +817,7 @@ async changePassword(
 ) {
   try {
     // 🔍 Model choose karo userType se
-    const model = this.getUserModel(userType);
+    const model = await this.getUserModel(userType);
 
     // 🔍 User fetch karo userId se
     const user = await model.findById(userId);
@@ -835,7 +850,7 @@ async logout(userId: string, userType: string) {
   try {
 
     // 🔍 Model choose karo userType se
-    const model = this.getUserModel(userType);
+    const model = await this.getUserModel(userType);
 
     // 🔍 User fetch karo userId se
     const user = await model.findById(userId);
@@ -858,7 +873,7 @@ async logout(userId: string, userType: string) {
 async deleteAccount(userId: string, userType: string) {
   try {
     // 🔍 Model choose karo userType se
-    const model = this.getUserModel(userType);
+    const model = await this.getUserModel(userType);
 
     // 🔍 User dhoondo
     const user = await model.findById(userId);
@@ -885,7 +900,7 @@ async deleteAccount(userId: string, userType: string) {
 async addDeleteReason(userId: string, userType: string, deleteReason: string) {
   try {
 
-    const model = this.getUserModel(userType);
+    const model = await this.getUserModel(userType);
 
     // 🔍 User dhoondo
     const user = await model.findById(userId);
@@ -917,7 +932,7 @@ async changeNotificationToggle(
       throw new BadRequestException('userId and userType are required');
     }
 
-    const userModel = this.getUserModel(userType);
+    const userModel = await this.getUserModel(userType);
 
     const user = await userModel.findOne({
       _id: userId,

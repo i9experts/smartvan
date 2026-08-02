@@ -686,16 +686,52 @@ async updateProfile(
 ) {
   let updatedDoc;
 
+  // Don't trust the JWT's userType claim blindly — it depends on a
+  // stored database field that could be missing/wrong for some accounts
+  // (e.g. older records, social-login signups). If it's not reliably
+  // 'driver' or 'parent', verify which model this account actually
+  // exists in and use that as the real source of truth instead.
+  if (userType !== 'driver' && userType !== 'parent') {
+    const [driverMatch, parentMatch] = await Promise.all([
+      this.databaseService.repositories.driverModel.findById(userId).select('_id'),
+      this.databaseService.repositories.parentModel.findById(userId).select('_id'),
+    ]);
+    if (driverMatch) userType = 'driver';
+    else if (parentMatch) userType = 'parent';
+  }
+
+  const model = userType === 'driver'
+    ? this.databaseService.repositories.driverModel
+    : this.databaseService.repositories.parentModel;
+
+  const updateFields: any = { ...editDto };
+
+  // Email changes need a collision check — never trust it blindly,
+  // matching the pattern used for admin profile updates.
+  if ((editDto as any).email && (userType === 'driver' || userType === 'parent')) {
+    const existing = await model.findById(userId);
+    if (!existing) throw new BadRequestException(`${userType} not found`);
+    if ((editDto as any).email !== existing.email) {
+      const emailTaken = await model.findOne({
+        email: (editDto as any).email,
+        _id: { $ne: userId },
+      });
+      if (emailTaken) {
+        throw new BadRequestException('Another account is already using this email');
+      }
+    }
+  }
+
   if (userType === 'driver') {
     updatedDoc = await this.databaseService.repositories.driverModel.findByIdAndUpdate(
       userId,
-      { $set: editDto },
+      { $set: updateFields },
       { new: true },
     );
   } else if (userType === 'parent') {
     updatedDoc = await this.databaseService.repositories.parentModel.findByIdAndUpdate(
       userId,
-      { $set: editDto },
+      { $set: updateFields },
       { new: true },
     );
   } else {
