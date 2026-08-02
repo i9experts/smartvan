@@ -1,14 +1,34 @@
 /* eslint-disable prettier/prettier */
 
-import { Controller, Post, Body, Req, Get, Query, Param } from '@nestjs/common';
+import { Controller, Post, Body, Req, Get, Query, Param, UnauthorizedException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { ReportService } from './report.service';
+import { DatabaseService } from 'src/database/databaseservice';
 
 
 @Controller('report')
 export class ReportController {
-  constructor(private readonly reportService: ReportService) {}
+  constructor(
+    private readonly reportService: ReportService,
+    private readonly databaseService: DatabaseService,
+  ) {}
+
+  // school_staff callers don't have an admin account of their own —
+  // resolve their school's actual admin so existing admin-scoped service
+  // logic (getReportsForAdmin, etc.) works completely unchanged for them
+  // too, exactly like the same pattern used in VanController.
+  private async resolveCallerForReports(user: any): Promise<{ id: string; role: string }> {
+    if (user.role === 'admin' || user.role === 'superadmin') {
+      return { id: user.userId, role: user.role };
+    }
+    if (user.role === 'school_staff') {
+      const school = await this.databaseService.repositories.SchoolModel.findById(user.schoolId);
+      if (!school) throw new UnauthorizedException('School not found for this staff account');
+      return { id: school.admin.toString(), role: 'admin' };
+    }
+    throw new UnauthorizedException('Invalid user type');
+  }
 
   @UseGuards(AuthGuard('jwt')) // Token guard
   @Post("addReport")
@@ -103,10 +123,10 @@ async getReportByIdByDriver
     @Query('page') page: string,
   @Query('limit') limit: string,
 ) {
-    const adminId = req.user.userId;
+    const caller = await this.resolveCallerForReports(req.user);
      const pageNumber = page ? parseInt(page) : 1;
     const limitNumber = limit ? parseInt(limit) : 10;
-    return this.reportService.getReportsForAdmin( adminId, req?.user?.role, query);
+    return this.reportService.getReportsForAdmin( caller.id, caller.role, query);
   }
 
   
