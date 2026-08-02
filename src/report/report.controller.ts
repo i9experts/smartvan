@@ -25,6 +25,13 @@ export class ReportController {
   }
 
   @UseGuards(AuthGuard('jwt'))
+  @Get("getMyTicketsByAdmin")
+  async getMyTicketsByAdmin(@Req() req: any) {
+    const adminId = req.user.userId;
+    return this.reportService.getMyTicketsByAdmin(adminId);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
 @Get("getParentReports")
 async getParentReports(
   @Req() req: any,

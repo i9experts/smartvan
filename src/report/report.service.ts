@@ -116,6 +116,22 @@ async createReportByAdmin(body: any, adminId: string) {
   };
 }
 
+// A school admin checking the status of their own submitted tickets —
+// these are deliberately excluded from getReportsForAdmin's regular
+// admin-role view (that's for parent/driver complaints about the
+// school's operations, not the admin's own outbound platform tickets).
+async getMyTicketsByAdmin(adminId: string) {
+  const tickets = await this.databaseService.repositories.reportModel
+    .find({ adminId, type: 'adminReport' })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return {
+    message: 'Your tickets fetched successfully',
+    data: tickets,
+  };
+}
+
 async createDriverReport(body: any, driverId: string) {
   if (!driverId) {
     throw new UnauthorizedException('Invalid driver token');
