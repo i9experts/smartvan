@@ -30,15 +30,33 @@ export class BillingService {
     });
   }
 
-  // Get price key based on van type and currency
-  getPriceKey(vanType: string, currency: string): string {
-    const type = vanType.toLowerCase();
+  // Get price key based on van type/category and currency.
+  // vehicleCategory (Van/Mini Bus/Mid-Size Bus/Full-Size Bus/Electric
+  // Vehicle/Other) is the authoritative signal when present — it's a
+  // clean, structured field, unlike vehicleType which is a computed
+  // display string like "Toyota Coaster (Mid-Size Bus)" that was never
+  // reliably matchable by exact string equality in the first place.
+  getPriceKey(vanType: string, currency: string, vehicleCategory?: string): string {
     const curr = currency.toUpperCase();
-    if (type === 'car' || type === 'rickshaw' || type === 'auto rickshaw') return 'car_pkr';
-    if ((type === 'hiroof' || type === 'hiace') && curr === 'USD') return 'hiroof_usd';
-    if ((type === 'hiroof' || type === 'hiace')) return 'hiroof_pkr';
-    if ((type === 'bus' || type === 'coach') && curr === 'USD') return 'bus_usd';
-    if ((type === 'bus' || type === 'coach')) return 'bus_pkr';
+    const isUsd = curr === 'USD';
+
+    if (vehicleCategory) {
+      const cat = vehicleCategory.toLowerCase();
+      if (cat === 'mini bus' || cat === 'mid-size bus' || cat === 'full-size bus') {
+        return isUsd ? 'bus_usd' : 'bus_pkr';
+      }
+      if (cat === 'van' || cat === 'electric vehicle') {
+        return isUsd ? 'hiroof_usd' : 'hiroof_pkr';
+      }
+      // 'Other' falls through to keyword matching on vehicleType below.
+    }
+
+    const type = vanType.toLowerCase();
+    if (type.includes('car') || type.includes('rickshaw')) return 'car_pkr';
+    if ((type.includes('hiroof') || type.includes('hiace')) && isUsd) return 'hiroof_usd';
+    if (type.includes('hiroof') || type.includes('hiace')) return 'hiroof_pkr';
+    if ((type.includes('bus') || type.includes('coach')) && isUsd) return 'bus_usd';
+    if (type.includes('bus') || type.includes('coach')) return 'bus_pkr';
     return 'hiroof_pkr'; // default
   }
 
@@ -59,7 +77,7 @@ export class BillingService {
 
     for (const van of vans) {
       const vanType = (van as any).vehicleType || 'Hiroof';
-      const priceKey = this.getPriceKey(vanType, currency);
+      const priceKey = this.getPriceKey(vanType, currency, (van as any).vehicleCategory);
       const price = VAN_PRICES[priceKey];
       totalAmount += price.amount;
       breakdown.push({
@@ -248,6 +266,20 @@ export class BillingService {
         await this.databaseService.repositories.SchoolModel.updateOne(
           { stripeCustomerId: customerId },
           { $set: { subscriptionStatus: 'payment_failed' } }
+        );
+        break;
+      }
+      case 'invoice.payment_succeeded': {
+        // A school previously marked payment_failed had no way to ever
+        // automatically recover — even after Stripe's automatic retries
+        // succeed, or the customer simply updates their card. Without
+        // this, a paying customer could stay stuck showing as
+        // delinquent indefinitely.
+        const invoice = event.data.object as Stripe.Invoice;
+        const customerId = invoice.customer as string;
+        await this.databaseService.repositories.SchoolModel.updateOne(
+          { stripeCustomerId: customerId },
+          { $set: { subscriptionStatus: 'active', currentPlan: 'Paid' } }
         );
         break;
       }
