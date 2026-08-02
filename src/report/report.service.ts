@@ -239,6 +239,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
                 $expr: {
                   $and: [
                     { $ne: ["$$drvId", null] },
+                    { $ne: ["$$drvId", ""] },
                     { $eq: ["$_id", { $toObjectId: "$$drvId" }] },
                   ],
                 },
@@ -262,6 +263,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
                 $expr: {
                   $and: [
                     { $ne: ["$$drvId", null] },
+                    { $ne: ["$$drvId", ""] },
                     { $eq: ["$driverId", { $toObjectId: "$$drvId" }] },
                   ],
                 },
@@ -285,6 +287,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
                 $expr: {
                   $and: [
                     { $ne: ["$$pId", null] },
+                    { $ne: ["$$pId", ""] },
                     { $eq: ["$_id", { $toObjectId: "$$pId" }] },
                   ],
                 },
@@ -308,6 +311,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
                 $expr: {
                   $and: [
                     { $ne: ["$$admId", null] },
+                    { $ne: ["$$admId", ""] },
                     { $eq: ["$_id", { $toObjectId: "$$admId" }] },
                   ],
                 },
@@ -331,6 +335,7 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
                 $expr: {
                   $and: [
                     { $ne: ["$$kId", null] },
+                    { $ne: ["$$kId", ""] },
                     { $eq: ["$_id", { $toObjectId: "$$kId" }] },
                   ],
                 },
