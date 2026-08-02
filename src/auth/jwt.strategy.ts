@@ -19,8 +19,9 @@ async validate(payload: any) {
     userId: payload.sub,
     email: payload.email,
     userType: payload.userType || null, // for driver/parent
-    role: payload.role || null,         // for admin/superadmin/employee
-    permissions: payload.permissions || [], // for employee
+    role: payload.role || null,         // for admin/superadmin/employee/school_staff
+    permissions: payload.permissions || [], // for employee/school_staff
+    schoolId: payload.schoolId || null, // for school_staff
   };
 }
 }
