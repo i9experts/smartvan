@@ -49,6 +49,12 @@ export class AdminController {
     throw new UnauthorizedException('Insufficient permissions');
   }
 
+  private requireParentsPermission(user: any) {
+    if (user.role === 'admin') return;
+    if (user.role === 'school_staff' && (user.permissions || []).includes('manage_parents')) return;
+    throw new UnauthorizedException('Insufficient permissions');
+  }
+
   @UseGuards(AuthGuard('jwt'))
 @Post('create-admin-school')
 async createAdminAndSchool(@Req() req, @Body() body: any) {
@@ -229,7 +235,8 @@ async getAllParents(
   @Query('limit') limit: string,
   @Query('search') search?: string,
 ) {
-  const adminId = req.user.userId;
+  this.requireParentsPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
   const pageNumber = page ? parseInt(page) : 1;
   const limitNumber = limit ? parseInt(limit) : 12;
   return this.adminService.getAllParentsBySchool(adminId, pageNumber, limitNumber, search);
