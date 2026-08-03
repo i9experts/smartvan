@@ -252,11 +252,20 @@ async getVansByAdmin(
 
   const skip = (page - 1) * limit;
 
+  const linkedVanIds = await this.getLinkedVanIds(school._id.toString());
+
   // 🔹 2. Aggregation pipeline
   const pipeline = [
     {
       $match: {
-        schoolId: school._id.toString(),
+        // A van belongs to this school's view either because it's their
+        // own (schoolId matches), or because another school's van has
+        // been approval-linked to them (matched by _id instead, since a
+        // linked van's schoolId still points to its home school).
+        $or: [
+          { schoolId: school._id.toString() },
+          { _id: { $in: linkedVanIds.map(id => new Types.ObjectId(id)) } },
+        ],
 
         // ✅ search filter
         ...(search
@@ -376,7 +385,10 @@ async getVansByAdmin(
   // 🔹 Total count (IMPORTANT: same filters)
   const total =
     await this.databaseService.repositories.VanModel.countDocuments({
-      schoolId: school._id.toString(),
+      $or: [
+        { schoolId: school._id.toString() },
+        { _id: { $in: linkedVanIds.map(id => new Types.ObjectId(id)) } },
+      ],
 
       ...(search
         ? { carNumber: { $regex: search, $options: 'i' } }
@@ -1508,6 +1520,126 @@ async getDriverById(driverId: string) {
 
 
 
+  // Returns van IDs this school can use beyond its own — i.e. vans
+  // belonging to another school that have been approval-linked to this
+  // one. Used everywhere a school's "accessible vans" needs to include
+  // shared ones: listing, student assignment, billing.
+  async getLinkedVanIds(schoolId: string): Promise<string[]> {
+    const links = await this.databaseService.repositories.vanSchoolLinkModel.find({
+      requestingSchoolId: schoolId,
+      status: 'approved',
+    }).lean();
+    return links.map((l: any) => l.vanId);
+  }
+
+  async requestVanLink(adminId: string, vanId: string) {
+    const requestingSchool = await this.databaseService.repositories.SchoolModel.findOne({
+      admin: new Types.ObjectId(adminId),
+    });
+    if (!requestingSchool) throw new UnauthorizedException('School not found');
+
+    const van = await this.databaseService.repositories.VanModel.findById(vanId);
+    if (!van) throw new BadRequestException('Van not found');
+
+    const requestingSchoolId = requestingSchool._id.toString();
+    if (van.schoolId === requestingSchoolId) {
+      throw new BadRequestException('This van already belongs to your school');
+    }
+
+    const existingLink = await this.databaseService.repositories.vanSchoolLinkModel.findOne({
+      vanId,
+      requestingSchoolId,
+    });
+    if (existingLink) {
+      if (existingLink.status === 'pending') throw new BadRequestException('A link request for this van is already pending');
+      if (existingLink.status === 'approved') throw new BadRequestException('This van is already linked to your school');
+      // A previously rejected request can be resubmitted.
+      existingLink.status = 'pending';
+      existingLink.requestedByAdminId = adminId;
+      existingLink.respondedByAdminId = undefined;
+      existingLink.respondedAt = undefined;
+      await existingLink.save();
+      return { message: 'Link request submitted', data: existingLink };
+    }
+
+    const link = await this.databaseService.repositories.vanSchoolLinkModel.create({
+      vanId,
+      homeSchoolId: van.schoolId,
+      requestingSchoolId,
+      status: 'pending',
+      requestedByAdminId: adminId,
+    });
+
+    return { message: 'Link request submitted', data: link };
+  }
+
+  async getPendingLinkRequests(adminId: string) {
+    const school = await this.databaseService.repositories.SchoolModel.findOne({
+      admin: new Types.ObjectId(adminId),
+    });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const requests = await this.databaseService.repositories.vanSchoolLinkModel.find({
+      homeSchoolId: school._id.toString(),
+      status: 'pending',
+    }).lean();
+
+    const enriched = await Promise.all(requests.map(async (r: any) => {
+      const van = await this.databaseService.repositories.VanModel.findById(r.vanId).lean();
+      const requestingSchool = await this.databaseService.repositories.SchoolModel.findById(r.requestingSchoolId).lean();
+      return {
+        ...r,
+        vanCarNumber: (van as any)?.carNumber ?? 'Unknown',
+        requestingSchoolName: (requestingSchool as any)?.schoolName ?? 'Unknown school',
+      };
+    }));
+
+    return { message: 'Pending link requests fetched', data: enriched };
+  }
+
+  async respondToLinkRequest(adminId: string, linkId: string, approve: boolean) {
+    const school = await this.databaseService.repositories.SchoolModel.findOne({
+      admin: new Types.ObjectId(adminId),
+    });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const link = await this.databaseService.repositories.vanSchoolLinkModel.findOne({
+      _id: linkId,
+      homeSchoolId: school._id.toString(),
+    });
+    if (!link) throw new BadRequestException('Link request not found for this school');
+
+    link.status = approve ? 'approved' : 'rejected';
+    link.respondedByAdminId = adminId;
+    link.respondedAt = new Date();
+    await link.save();
+
+    return { message: `Link request ${approve ? 'approved' : 'rejected'}`, data: link };
+  }
+
+  async getMyLinkedVans(adminId: string) {
+    const school = await this.databaseService.repositories.SchoolModel.findOne({
+      admin: new Types.ObjectId(adminId),
+    });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const links = await this.databaseService.repositories.vanSchoolLinkModel.find({
+      requestingSchoolId: school._id.toString(),
+    }).lean();
+
+    const enriched = await Promise.all(links.map(async (l: any) => {
+      const van = await this.databaseService.repositories.VanModel.findById(l.vanId).lean();
+      const homeSchool = await this.databaseService.repositories.SchoolModel.findById(l.homeSchoolId).lean();
+      return {
+        ...l,
+        vanCarNumber: (van as any)?.carNumber ?? 'Unknown',
+        homeSchoolName: (homeSchool as any)?.schoolName ?? 'Unknown school',
+      };
+    }));
+
+    return { message: 'Linked vans fetched', data: enriched };
+  }
+
   async addDriverByAdmin(adminId: string, body: any) {
     const { fullname, password } = body;
     const email = body.email?.trim() || undefined;
@@ -1531,7 +1663,26 @@ async getDriverById(driverId: string) {
     if (NIC) orConditions.push({ NIC });
 
     const existing = await this.databaseService.repositories.driverModel.findOne({ $or: orConditions });
-    if (existing) throw new BadRequestException('A driver with this email, phone number, or CNIC already exists');
+    if (existing) {
+      // Instead of a dead-end error, surface enough info for the caller
+      // to offer "request to link this existing driver/van to your
+      // school too" — the real-world case being one driver/van covering
+      // a combined route across multiple campuses of the same
+      // institution, rather than treating this as a data-entry mistake.
+      const existingSchool = await this.databaseService.repositories.SchoolModel.findById(existing.schoolId).lean();
+      const existingVan = await this.databaseService.repositories.VanModel.findOne({ driverId: existing._id }).lean();
+      throw new BadRequestException({
+        message: 'A driver with this email, phone number, or CNIC already exists',
+        existingDriverFound: true,
+        existingDriver: {
+          driverId: existing._id.toString(),
+          fullname: existing.fullname,
+          homeSchoolName: (existingSchool as any)?.schoolName ?? 'another school',
+          vanId: existingVan?._id?.toString() ?? null,
+          vanCarNumber: (existingVan as any)?.carNumber ?? null,
+        },
+      });
+    }
 
     const bcrypt = require('bcrypt');
     // Most drivers can't manage email/OTP verification — the admin sets

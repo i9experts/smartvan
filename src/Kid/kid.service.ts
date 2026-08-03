@@ -512,10 +512,20 @@ async assignVanToStudents(
 
   const schoolIdString = school._id.toString();
 
-  // 2️⃣ Check Van
+  // 2️⃣ Check Van — either owned by this school, or approval-linked from
+  // another school (the shared-van-across-campuses case).
+  const linkedVanIds = await this.databaseService.repositories.vanSchoolLinkModel.find({
+    requestingSchoolId: schoolIdString,
+    status: 'approved',
+  }).lean();
+  const linkedVanIdStrings = linkedVanIds.map((l: any) => l.vanId);
+
   const van = await this.databaseService.repositories.VanModel.findOne({
     _id: vanId,
-    schoolId: schoolIdString,
+    $or: [
+      { schoolId: schoolIdString },
+      { _id: { $in: linkedVanIdStrings } },
+    ],
   });
 
   if (!van) {
@@ -533,7 +543,6 @@ async assignVanToStudents(
 
   const driver = await this.databaseService.repositories.driverModel.findOne({
     _id: van.driverId,
-    schoolId: schoolIdString,
     isDelete: false,
   });
 

@@ -31,6 +31,7 @@ import { DatabaseService } from './databaseservice'
             { name: schema.Support.name, schema: schema.SupportSchema },
        { name: schema.Employee.name, schema: schema.EmployeeSchema },
        { name: schema.SchoolStaff.name, schema: schema.SchoolStaffSchema },
+       { name: schema.VanSchoolLink.name, schema: schema.VanSchoolLinkSchema },
        { name: schema.AuditLog.name, schema: schema.AuditLogSchema },
            
     ]),

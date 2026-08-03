@@ -208,6 +208,42 @@ async changeVanStatus(
 
 
 @UseGuards(AuthGuard('jwt'))
+@Post('requestVanLink')
+async requestVanLink(@Req() req: any, @Body('vanId') vanId: string) {
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.vanService.requestVanLink(adminId, vanId);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Get('getPendingLinkRequests')
+async getPendingLinkRequests(@Req() req: any) {
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.vanService.getPendingLinkRequests(adminId);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Post('respondToLinkRequest')
+async respondToLinkRequest(
+  @Req() req: any,
+  @Body('linkId') linkId: string,
+  @Body('approve') approve: boolean,
+) {
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.vanService.respondToLinkRequest(adminId, linkId, approve);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Get('getMyLinkedVans')
+async getMyLinkedVans(@Req() req: any) {
+  this.requireFleetPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.vanService.getMyLinkedVans(adminId);
+}
+
+@UseGuards(AuthGuard('jwt'))
 @Post('addDriverByAdmin')
 async addDriverByAdmin(@Req() req: any, @Body() body: any) {
   this.requireFleetPermission(req.user);

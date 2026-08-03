@@ -14,4 +14,5 @@ export { PromotionBanner, PromotionBannerDocument, PromotionBannerSchema } from 
 export { Support, SupportDocument, SupportSchema } from '../alert/support.schema';
 export { Employee, EmployeeDocument, EmployeeSchema } from '../employee/employee.schema';
 export { SchoolStaff, SchoolStaffDocument, SchoolStaffSchema } from '../school-staff/school-staff.schema';
+export { VanSchoolLink, VanSchoolLinkDocument, VanSchoolLinkSchema } from '../van-school-link/van-school-link.schema';
 export { AuditLog, AuditLogDocument, AuditLogSchema } from '../audit-log/audit-log.schema';

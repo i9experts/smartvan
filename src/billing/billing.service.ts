@@ -66,8 +66,20 @@ export class BillingService {
     const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
     if (!school) throw new BadRequestException('School not found');
 
+    // Include vans approval-linked from another school (the shared
+    // driver/van-across-campuses case) — each school that actually uses
+    // a shared van is billed for it independently.
+    const linkedVanLinks = await this.databaseService.repositories.vanSchoolLinkModel.find({
+      requestingSchoolId: school._id.toString(),
+      status: 'approved',
+    }).lean();
+    const linkedVanIds = linkedVanLinks.map((l: any) => l.vanId);
+
     const vans = await this.databaseService.repositories.VanModel.find({
-      schoolId: school._id.toString(),
+      $or: [
+        { schoolId: school._id.toString() },
+        { _id: { $in: linkedVanIds.map(id => new Types.ObjectId(id)) } },
+      ],
       status: 'active',
     }).lean();
 
