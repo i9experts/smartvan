@@ -234,24 +234,18 @@ async getAssignedTripByDriver(driverId: string) {
     return { message: 'No active trip today', data: null };
   }
 
-  // ✅ Step 6: School find karo
-  const school = await this.databaseService.repositories.SchoolModel.findById(
-    new Types.ObjectId(activeRoutes[0].schoolId),
-    { contactNumber: 1 }
-  );
-  if (!school) {
-    throw new BadRequestException('School not found');
-  }
-
-  // ✅ Step 7: Kids count
-  const totalKids = await this.databaseService.repositories.KidModel.countDocuments({
-    VanId: van._id,
-  });
-
   // ✅ Step 8: Response ready karo
   const routeData = [];
 
   for (const route of activeRoutes) {
+    // A shared van (linked to more than one school) can have routes from
+    // different schools active on the same day — resolve each route's
+    // own school here rather than assuming they all belong to one.
+    const routeSchool = await this.databaseService.repositories.SchoolModel.findById(
+      new Types.ObjectId(route.schoolId),
+      { contactNumber: 1 },
+    );
+
     // Step 8.1: CreatedAt se aaj ki date match karni
     const startOfDay = new Date(todayDate + 'T00:00:00+05:00'); // start of today (PKT)
     const endOfDay = new Date(todayDate + 'T23:59:59+05:00');   // end of today
@@ -299,8 +293,8 @@ async getAssignedTripByDriver(driverId: string) {
       routeTitle: route.title,
       tripType: route.tripType,
       startTime: route.startTime,
-      schoolContact: school?.contactNumber || null,
-      totalKids,
+      schoolContact: routeSchool?.contactNumber || null,
+      totalKids: stopKidIds.length,
       passengers,
     };
 
