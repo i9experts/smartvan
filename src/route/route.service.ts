@@ -173,6 +173,87 @@ export class RouteService {
 
 
 
+// The driver's single, combined pickup/drop list across every
+// currently-active trip on their van — not just one trip at a time. On a
+// van shared across multiple linked schools, the driver's real-world
+// route often interleaves stops from both campuses rather than doing
+// one school entirely before the other. Rather than forcing the driver
+// to switch between two separate trip screens mid-drive, this merges
+// every active trip's passengers into one list, each tagged with which
+// school/trip they actually belong to, so pickStudent/dropStudentForHome
+// can still record against the correct trip underneath.
+async getMergedActivePassengers(driverId: string) {
+  if (!driverId) {
+    throw new UnauthorizedException('Invalid driver token');
+  }
+
+  const van = await this.databaseService.repositories.VanModel.findOne({
+    driverId: new Types.ObjectId(driverId),
+  });
+  if (!van) {
+    throw new BadRequestException('Van not found for this driver');
+  }
+
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const activeTrips = await this.databaseService.repositories.TripModel.find({
+    vanId: van._id.toString(),
+    status: 'ongoing',
+    createdAt: { $gte: startOfDay, $lte: endOfDay },
+  }).lean();
+
+  if (!activeTrips || activeTrips.length === 0) {
+    return { message: 'No active trips right now', data: [] };
+  }
+
+  const passengers: any[] = [];
+
+  for (const trip of activeTrips) {
+    const route = await this.databaseService.repositories.routeModel.findById(trip.routeId).lean();
+    if (!route) continue;
+
+    const school = await this.databaseService.repositories.SchoolModel.findById(
+      new Types.ObjectId((trip as any).schoolId),
+      { schoolName: 1 },
+    ).lean();
+
+    const stopKidIds = ((route as any).kidLocations || []).map((k: any) => k.kidId?.toString());
+    const stopKids = stopKidIds.length
+      ? await this.databaseService.repositories.KidModel.find(
+          { _id: { $in: stopKidIds } },
+          { fullname: 1, image: 1 },
+        ).lean()
+      : [];
+    const kidById: Record<string, any> = {};
+    stopKids.forEach((k: any) => { kidById[k._id.toString()] = k; });
+
+    for (const stop of ((route as any).kidLocations || [])) {
+      const kidIdStr = stop.kidId?.toString();
+      const kid = kidById[kidIdStr];
+      const tripKid = (trip as any).kids?.find((x: any) => x.kidId === kidIdStr);
+
+      passengers.push({
+        kidId: kidIdStr,
+        fullname: kid?.fullname || 'Unknown',
+        image: kid?.image || null,
+        tripId: trip._id.toString(),
+        tripType: (trip as any).type,
+        schoolId: (trip as any).schoolId,
+        schoolName: (school as any)?.schoolName || 'Unknown School',
+        status: tripKid?.status || 'pending',
+        pickupTime: tripKid?.time || null,
+        lat: stop.lat,
+        long: stop.long,
+      });
+    }
+  }
+
+  return { message: 'Active passengers fetched successfully', data: passengers };
+}
+
 async getAssignedTripByDriver(driverId: string) {
   if (!driverId) {
     throw new UnauthorizedException('Invalid driver token');

@@ -47,6 +47,13 @@ async getAssignedTripByDriver(@Req() req: any) {
   return this.routetService.getAssignedTripByDriver(driverId);
 }
 
+@UseGuards(AuthGuard('jwt'))
+@Get('getMergedActivePassengers')
+async getMergedActivePassengers(@Req() req: any) {
+  const driverId = req.user.userId;
+  return this.routetService.getMergedActivePassengers(driverId);
+}
+
 @UseGuards(AuthGuard('jwt')) // JWT protection
 @Get('getRoutes')
 async getRoutes(
