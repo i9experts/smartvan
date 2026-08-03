@@ -137,6 +137,25 @@ async getVans(userId: string, userType: string) {
       throw new UnauthorizedException('School not found');
     }
 
+    if (dto.carNumber) {
+      const existingVan = await this.databaseService.repositories.VanModel.findOne({ carNumber: dto.carNumber });
+      if (existingVan && existingVan.schoolId !== school._id.toString()) {
+        // Same real-world case as the driver collision: rather than a
+        // dead-end error, surface enough info to offer "request to link
+        // this existing van to your school too".
+        const existingSchool = await this.databaseService.repositories.SchoolModel.findById(existingVan.schoolId).lean();
+        throw new BadRequestException({
+          message: 'A van with this plate number already exists',
+          existingVanFound: true,
+          existingVan: {
+            vanId: existingVan._id.toString(),
+            carNumber: existingVan.carNumber,
+            homeSchoolName: (existingSchool as any)?.schoolName ?? 'another school',
+          },
+        });
+      }
+    }
+
  
     const newVan = new this.databaseService.repositories.VanModel({
       
