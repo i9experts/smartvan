@@ -1310,7 +1310,7 @@ async updateKid(parentId: string, kidId: string, createKidDto: CreateKidDto) {
     const kids = await this.databaseService.repositories.KidModel.find(
       
       { parentId: new Types.ObjectId(parentId), status: "active" },
-      { VanId: 1, fullname: 1, image: 1, status: 1 }
+      { VanId: 1, fullname: 1, image: 1, status: 1, schoolId: 1 }
     );
 
     console.log (kids)
@@ -1358,9 +1358,18 @@ async updateKid(parentId: string, kidId: string, createKidDto: CreateKidDto) {
         name: kid.fullname,
         image: kid?.image || "",
         status: kid?.status || "",
+        schoolId: kid.schoolId,
       });
       return acc;
     }, {});
+
+    // A shared van can run trips for more than one school. A parent must
+    // only ever see the trip that actually belongs to their own kid's
+    // school — never an unrelated trip from another linked campus that
+    // simply happens to reuse the same physical van.
+    const validVanSchoolPairs = new Set(
+      kids.map((k: any) => `${k.VanId}_${k.schoolId}`)
+    );
   
     // Date filter for "today"
     const todayStart = new Date();
@@ -1423,6 +1432,7 @@ async updateKid(parentId: string, kidId: string, createKidDto: CreateKidDto) {
         $project: {
           tripId: "$_id",
           vanId: "$vanId",
+          schoolId: 1,
           Vanstatus: "$van.status",
           kids: 1, // <<----- IMPORTANT: return kids from DB
           startTime: "$tripStart.startTime",
@@ -1440,9 +1450,15 @@ async updateKid(parentId: string, kidId: string, createKidDto: CreateKidDto) {
       }
     ]);
   
-    // Step 5: Merge kids status
-    const tripsWithKids = trips.map(t => {
-      const vanKids = kidsByVan[t.vanId] || [];
+    // Step 5: Merge kids status — only for trips that actually belong to
+    // this parent's kid's own school. A shared van can run trips for
+    // more than one linked school; without this check, a parent would
+    // see a completely unrelated trip from another campus just because
+    // it happens to reuse the same physical van.
+    const tripsWithKids = trips
+      .filter(t => validVanSchoolPairs.has(`${t.vanId}_${t.schoolId}`))
+      .map(t => {
+      const vanKids = (kidsByVan[t.vanId] || []).filter((k: any) => k.schoolId === t.schoolId);
   
       const kidsWithStatus = vanKids.map(k => {
         const tripKid = t.kids?.find(x => x.kidId === k.id);
