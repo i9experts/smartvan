@@ -209,10 +209,10 @@ async changeVanStatus(
 
 @UseGuards(AuthGuard('jwt'))
 @Post('requestVanLink')
-async requestVanLink(@Req() req: any, @Body('vanId') vanId: string) {
+async requestVanLink(@Req() req: any, @Body('vanId') vanId: string, @Body('driverId') driverId: string) {
   this.requireFleetPermission(req.user);
   const adminId = await this.resolveEffectiveAdminId(req.user);
-  return this.vanService.requestVanLink(adminId, vanId);
+  return this.vanService.requestVanLink(adminId, vanId, driverId);
 }
 
 @UseGuards(AuthGuard('jwt'))

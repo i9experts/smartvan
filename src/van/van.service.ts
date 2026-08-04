@@ -1439,19 +1439,37 @@ async getAllDriversByAdmin(
 
   const skip = (page - 1) * limit;
 
+  // Drivers whose CURRENT van is linked to this school also belong in
+  // this list — their own schoolId still points to their home school,
+  // so a plain schoolId match alone would never surface them here.
+  const linkedVanIds = await this.getLinkedVanIds(school._id.toString());
+  const linkedVans = linkedVanIds.length
+    ? await this.databaseService.repositories.VanModel.find({
+        _id: { $in: linkedVanIds.map(id => new Types.ObjectId(id)) },
+      }).select('driverId').lean()
+    : [];
+  const linkedDriverIds = linkedVans.map((v: any) => v.driverId).filter(Boolean);
+
   // 2️⃣ Build query
-  const query: any = {
-    schoolId: school._id.toString(),
+  const baseFilter: any = {
     isDelete: false,
   };
 
   if (search) {
-    query.fullname = { $regex: search, $options: 'i' };
+    baseFilter.fullname = { $regex: search, $options: 'i' };
   }
 
   if (status) {
-    query.status = status;
+    baseFilter.status = status;
   }
+
+  const query: any = {
+    ...baseFilter,
+    $or: [
+      { schoolId: school._id.toString() },
+      { _id: { $in: linkedDriverIds } },
+    ],
+  };
 
   // 3️⃣ Fetch drivers with pagination
   const drivers = await this.databaseService.repositories.driverModel
@@ -1548,30 +1566,65 @@ async getDriverById(driverId: string) {
       requestingSchoolId: schoolId,
       status: 'approved',
     }).lean();
-    return links.map((l: any) => l.vanId);
+
+    const vanIds = links.filter((l: any) => l.vanId).map((l: any) => l.vanId);
+
+    // Driver-only links (no van at the time of request) resolve to
+    // whatever van that driver is CURRENTLY assigned to, if any — so
+    // access follows the driver even if their van assignment changes.
+    const driverOnlyLinks = links.filter((l: any) => !l.vanId && l.driverId);
+    if (driverOnlyLinks.length) {
+      const driverIds = driverOnlyLinks.map((l: any) => l.driverId);
+      const vansForDrivers = await this.databaseService.repositories.VanModel.find({
+        driverId: { $in: driverIds.map((id: string) => new Types.ObjectId(id)) },
+      }).lean();
+      vansForDrivers.forEach((v: any) => vanIds.push(v._id.toString()));
+    }
+
+    return vanIds;
   }
 
-  async requestVanLink(adminId: string, vanId: string) {
+  async requestVanLink(adminId: string, vanId?: string, driverId?: string) {
     const requestingSchool = await this.databaseService.repositories.SchoolModel.findOne({
       admin: new Types.ObjectId(adminId),
     });
     if (!requestingSchool) throw new UnauthorizedException('School not found');
-
-    const van = await this.databaseService.repositories.VanModel.findById(vanId);
-    if (!van) throw new BadRequestException('Van not found');
-
     const requestingSchoolId = requestingSchool._id.toString();
-    if (van.schoolId === requestingSchoolId) {
-      throw new BadRequestException('This van already belongs to your school');
+
+    if (!vanId && !driverId) {
+      throw new BadRequestException('Either vanId or driverId is required');
     }
 
+    let homeSchoolId: string;
+    let resolvedDriverId: string | undefined = driverId;
+
+    if (vanId) {
+      const van = await this.databaseService.repositories.VanModel.findById(vanId);
+      if (!van) throw new BadRequestException('Van not found');
+      if (van.schoolId === requestingSchoolId) {
+        throw new BadRequestException('This van already belongs to your school');
+      }
+      homeSchoolId = van.schoolId;
+      resolvedDriverId = van.driverId?.toString();
+    } else {
+      // No van yet — link the driver directly. Access to whatever van
+      // they eventually get assigned to follows automatically.
+      const driver = await this.databaseService.repositories.driverModel.findById(driverId);
+      if (!driver) throw new BadRequestException('Driver not found');
+      if (driver.schoolId === requestingSchoolId) {
+        throw new BadRequestException('This driver already belongs to your school');
+      }
+      homeSchoolId = driver.schoolId;
+    }
+
+    const matchKey = vanId ? { vanId } : { driverId: resolvedDriverId };
     const existingLink = await this.databaseService.repositories.vanSchoolLinkModel.findOne({
-      vanId,
+      ...matchKey,
       requestingSchoolId,
     });
     if (existingLink) {
-      if (existingLink.status === 'pending') throw new BadRequestException('A link request for this van is already pending');
-      if (existingLink.status === 'approved') throw new BadRequestException('This van is already linked to your school');
+      if (existingLink.status === 'pending') throw new BadRequestException('A link request for this driver/van is already pending');
+      if (existingLink.status === 'approved') throw new BadRequestException('This driver/van is already linked to your school');
       // A previously rejected request can be resubmitted.
       existingLink.status = 'pending';
       existingLink.requestedByAdminId = adminId;
@@ -1582,8 +1635,9 @@ async getDriverById(driverId: string) {
     }
 
     const link = await this.databaseService.repositories.vanSchoolLinkModel.create({
-      vanId,
-      homeSchoolId: van.schoolId,
+      vanId: vanId || undefined,
+      driverId: resolvedDriverId || undefined,
+      homeSchoolId,
       requestingSchoolId,
       status: 'pending',
       requestedByAdminId: adminId,
@@ -1604,11 +1658,13 @@ async getDriverById(driverId: string) {
     }).lean();
 
     const enriched = await Promise.all(requests.map(async (r: any) => {
-      const van = await this.databaseService.repositories.VanModel.findById(r.vanId).lean();
+      const van = r.vanId ? await this.databaseService.repositories.VanModel.findById(r.vanId).lean() : null;
+      const driver = r.driverId ? await this.databaseService.repositories.driverModel.findById(r.driverId).lean() : null;
       const requestingSchool = await this.databaseService.repositories.SchoolModel.findById(r.requestingSchoolId).lean();
       return {
         ...r,
-        vanCarNumber: (van as any)?.carNumber ?? 'Unknown',
+        vanCarNumber: (van as any)?.carNumber ?? null,
+        driverName: (driver as any)?.fullname ?? null,
         requestingSchoolName: (requestingSchool as any)?.schoolName ?? 'Unknown school',
       };
     }));
@@ -1647,11 +1703,13 @@ async getDriverById(driverId: string) {
     }).lean();
 
     const enriched = await Promise.all(links.map(async (l: any) => {
-      const van = await this.databaseService.repositories.VanModel.findById(l.vanId).lean();
+      const van = l.vanId ? await this.databaseService.repositories.VanModel.findById(l.vanId).lean() : null;
+      const driver = l.driverId ? await this.databaseService.repositories.driverModel.findById(l.driverId).lean() : null;
       const homeSchool = await this.databaseService.repositories.SchoolModel.findById(l.homeSchoolId).lean();
       return {
         ...l,
-        vanCarNumber: (van as any)?.carNumber ?? 'Unknown',
+        vanCarNumber: (van as any)?.carNumber ?? null,
+        driverName: (driver as any)?.fullname ?? null,
         homeSchoolName: (homeSchool as any)?.schoolName ?? 'Unknown school',
       };
     }));
