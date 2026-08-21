@@ -171,6 +171,7 @@ afterInit(server: Server) {
       'unknown';
 
     this.server.to(room).emit('locationUpdated', {
+      tripId: room,
       userId,
       location: smoothLocation,
       at: new Date().toISOString(),
