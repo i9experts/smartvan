@@ -1302,7 +1302,25 @@ async generateGraphData(
         vanId: van._id.toString()
       }).sort({ createdAt: -1 }).lean();
 
-      return { message: 'Trips fetched', data: trips };
+      // Previously returned bare trip documents (routeId as a raw string,
+      // no title) — every screen showing "School Route" or a trip name
+      // had nothing real to display. Enrich with each trip's route title.
+      const routeIds = Array.from(new Set(trips.map((t: any) => t.routeId).filter(Boolean)));
+      const routes = routeIds.length
+        ? await this.databaseService.repositories.routeModel.find(
+            { _id: { $in: routeIds } },
+            { title: 1 },
+          ).lean()
+        : [];
+      const routeTitleById: Record<string, string> = {};
+      routes.forEach((r: any) => { routeTitleById[r._id.toString()] = r.title; });
+
+      const enrichedTrips = trips.map((t: any) => ({
+        ...t,
+        schoolRoute: routeTitleById[t.routeId] || null,
+      }));
+
+      return { message: 'Trips fetched', data: enrichedTrips };
     } catch (e) {
       return { message: 'Error fetching trips', data: [] };
     }
