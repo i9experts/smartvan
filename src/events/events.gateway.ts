@@ -186,18 +186,20 @@ afterInit(server: Server) {
     @MessageBody() data: { tripId: string },
     @ConnectedSocket() socket: CustomSocket,
   ) {
-    const parentId = socket?.decoded_token?.userId || socket?.decoded_token?.sub;
+    const { tripId } = data;
+    const userType = socket?.decoded_token?.userType;
+    const role = socket?.decoded_token?.role;
+    const userId =
+      socket?.decoded_token?.userId || socket?.decoded_token?.sub;
 
-    if (!parentId) {
+    if (!userId) {
       socket.emit('error', { msg: 'Not authenticated' });
       return;
     }
 
-    const { tripId } = data;
-
     const trip = await this.databaseService.repositories.TripModel.findById(
       new Types.ObjectId(tripId),
-      { vanId: 1 }
+      { vanId: 1, schoolId: 1 },
     ).lean();
 
     if (!trip) {
@@ -205,19 +207,42 @@ afterInit(server: Server) {
       return;
     }
 
+    // School admins watching their own Live Tracking dashboard were never
+    // handled here at all — this only ever checked for a parent's linked
+    // kid, so every admin join was silently rejected with "no child on
+    // this van", meaning the dashboard never actually received location
+    // broadcasts no matter how correct the rest of the pipeline was.
+    if (role === 'admin' || role === 'superadmin') {
+      const school = await this.databaseService.repositories.SchoolModel.findOne({
+        admin: new Types.ObjectId(userId),
+      }).lean();
+
+      if (role !== 'superadmin' && (!school || school._id.toString() !== trip.schoolId)) {
+        console.warn(`Unauthorized joinTrip — adminId: ${userId}, tripId: ${tripId}`);
+        socket.emit('error', { msg: 'Not authorized: trip belongs to a different school' });
+        return;
+      }
+
+      socket.join(tripId);
+      console.log(`Admin ${userId} joined trip room: ${tripId}`);
+      this.server.to(socket.id).emit('joinedTrip', { tripId });
+      return;
+    }
+
+    // Parent path — unchanged.
     const kid = await this.databaseService.repositories.KidModel.findOne({
-      parentId: new Types.ObjectId(parentId),
+      parentId: new Types.ObjectId(userId),
       VanId: trip.vanId,
     }).lean();
 
     if (!kid) {
-      console.warn(`Unauthorized joinTrip — parentId: ${parentId}, tripId: ${tripId}`);
+      console.warn(`Unauthorized joinTrip — parentId: ${userId}, tripId: ${tripId}`);
       socket.emit('error', { msg: 'Not authorized: no child on this van' });
       return;
     }
 
     socket.join(tripId);
-    console.log(`Parent ${parentId} joined trip room: ${tripId}`);
+    console.log(`Parent ${userId} joined trip room: ${tripId}`);
     this.server.to(socket.id).emit('joinedTrip', { tripId });
   }
 
