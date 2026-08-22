@@ -679,7 +679,12 @@ async startTrip(driverId: string, createTripDto: CreateTripDto) {
     }
   });
 
-  if (getTrip) {
+  // Only block if that trip is still genuinely in progress — once a
+  // driver has ended a trip, they should be able to start a fresh one
+  // for the same route later the same day (e.g. an afternoon run, or
+  // picking back up after ending by mistake), not be permanently
+  // locked out for the rest of the day.
+  if (getTrip && getTrip.status !== 'end') {
     throw new BadRequestException('This scheduled trip already started today');
   }
 

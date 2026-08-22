@@ -370,7 +370,12 @@ async getAssignedTripByDriver(driverId: string) {
       scheduleDate: todayDate,
       routeId: route._id,
       tripStatus: existingTrip?.status || "start",
-      TripStarted: !!existingTrip,
+      // Only "still going" trips should offer Continue — an ended trip
+      // for today shouldn't be silently reopened and treated as live;
+      // the driver should be able to start a genuinely fresh trip
+      // instead (this was the root cause of GPS updates going to a
+      // trip the admin dashboard correctly no longer shows as active).
+      TripStarted: !!existingTrip && existingTrip.status !== 'end',
       routeTitle: route.title,
       tripType: route.tripType,
       startTime: route.startTime,
@@ -379,8 +384,9 @@ async getAssignedTripByDriver(driverId: string) {
       passengers,
     };
 
-    // agar trip mili to details do
-    if (existingTrip) {
+    // agar trip mili to details do (only pass through as "continuable" if
+    // it's not already ended — see TripStarted note above)
+    if (existingTrip && existingTrip.status !== 'end') {
       routeData.push({
         ...routeInfo,
         tripDetails: existingTrip,
