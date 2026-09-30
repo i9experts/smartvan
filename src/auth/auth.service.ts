@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { BadRequestException, InternalServerErrorException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { InjectModel, InjectConnection } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
+import { Logger } from '@nestjs/common';
 import { User, UserDocument } from '../user/schema/user.schema';
 import { Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
@@ -22,8 +24,11 @@ export class AuthService {
     private databaseService: DatabaseService,
     private readonly otpService: OtpService, 
 
-    private readonly jwtService: JwtService
+    private readonly jwtService: JwtService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
+
+  private readonly logger = new Logger(AuthService.name);
 
 
   private async getUserModel(userType: string, userId?: string) {
@@ -871,30 +876,69 @@ async logout(userId: string, userType: string) {
 }
 
 async deleteAccount(userId: string, userType: string) {
-  try {
-    // 🔍 Model choose karo userType se
-    const model = await this.getUserModel(userType);
-
-    // 🔍 User dhoondo
-    const user = await model.findById(userId);
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
-
-    if (user.isDelete === false || user.isDelete === undefined) {
-  user.isDelete = true;
-  user.isVerified = false; // ✅ Account delete hone par verification hata do
-  await user.save();
-};              
-
-
-
-
-   
-    return { message: 'Your account has been deleted successfully' };
-  } catch (error) {
-    throw new UnauthorizedException(error.message || 'Account delete failed');
+  // The account being deleted is ALWAYS the one in the JWT — no id is
+  // accepted from the client, so a user can only delete themselves.
+  const model = await this.getUserModel(userType, userId);
+  const user = await model.findById(userId);
+  if (!user) {
+    throw new UnauthorizedException('User not found');
   }
+
+  // Drivers are managed by their school/van assignments; keep the previous
+  // soft-delete behaviour for them.
+  if (model !== this.databaseService.repositories.parentModel) {
+    if (!user.isDelete) {
+      user.isDelete = true;
+      user.isVerified = false;
+      user.fcmToken = null;
+      await user.save();
+    }
+    return { message: 'Your account has been deleted successfully' };
+  }
+
+  // ── Parent: permanent deletion ────────────────────────────────────────
+  const repos = this.databaseService.repositories;
+  const pid = user._id.toString();
+  const kids = await repos.KidModel.find({ parentId: user._id }).select('_id').lean();
+  const kidIds = kids.map((k: any) => k._id.toString());
+
+  // Each step is idempotent, so if one fails the client can simply retry.
+  // The user record itself is deleted LAST: while it still exists the
+  // account can log in and re-run the deletion, so nothing is orphaned.
+  const steps: [string, () => Promise<any>][] = [
+    ['notifications', () => repos.notificationModel.deleteMany({ parentId: pid })],
+    ['reports', () => repos.reportModel.deleteMany({ parentId: pid })],
+    // Remove the children's pick/drop entries from trip history (trips
+    // themselves belong to the driver/school and are kept).
+    ['trip history', () => repos.TripModel.updateMany(
+      { 'kids.kidId': { $in: kidIds } },
+      { $pull: { kids: { kidId: { $in: kidIds } } } } as any,
+    )],
+    // Payment records are financial records the school must retain; strip
+    // the link to the parent account instead of deleting them.
+    ['payments', async () => {
+      const payments = this.connection.models['TransportPayment'];
+      if (payments) {
+        await payments.updateMany({ parentId: pid }, { $set: { parentId: '' } });
+      }
+    }],
+    ['children', () => repos.KidModel.deleteMany({ parentId: user._id })],
+    ['account', () => model.deleteOne({ _id: user._id })],
+  ];
+
+  for (const [name, run] of steps) {
+    try {
+      await run();
+    } catch (err) {
+      this.logger.error(`deleteAccount(${pid}) failed at "${name}": ${err?.message}`);
+      throw new InternalServerErrorException(
+        'We could not fully delete your account. Please try again.',
+      );
+    }
+  }
+
+  this.logger.log(`Parent account ${pid} permanently deleted (${kidIds.length} children)`);
+  return { message: 'Your account has been deleted successfully' };
 }
 
 async addDeleteReason(userId: string, userType: string, deleteReason: string) {
