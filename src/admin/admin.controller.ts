@@ -10,6 +10,7 @@ import {
   Body,
   Req,
   UnauthorizedException,
+  ForbiddenException,
 
 } from '@nestjs/common';
 import { AdminService } from './admin.service'
@@ -40,19 +41,19 @@ export class AdminController {
       if (!school) throw new UnauthorizedException('School not found for this staff account');
       return school.admin.toString();
     }
-    throw new UnauthorizedException('Invalid role for this action');
+    throw new ForbiddenException('Invalid role for this action');
   }
 
   private requireStudentsPermission(user: any) {
     if (user.role === 'admin') return;
     if (user.role === 'school_staff' && (user.permissions || []).includes('manage_students')) return;
-    throw new UnauthorizedException('Insufficient permissions');
+    throw new ForbiddenException('Insufficient permissions');
   }
 
   private requireParentsPermission(user: any) {
     if (user.role === 'admin') return;
     if (user.role === 'school_staff' && (user.permissions || []).includes('manage_parents')) return;
-    throw new UnauthorizedException('Insufficient permissions');
+    throw new ForbiddenException('Insufficient permissions');
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -60,7 +61,7 @@ export class AdminController {
 async createAdminAndSchool(@Req() req, @Body() body: any) {
   // role check
   if (req.user.role !== 'superadmin') {
-    throw new UnauthorizedException('Only superadmins can access this API');
+    throw new ForbiddenException('Only superadmins can access this API');
   }
 
   return this.adminService.createAdminAndSchool(body);
@@ -88,7 +89,7 @@ async updateOwnProfile(@Req() req, @Body() body: { name?: string; email?: string
 async editAdminAndSchool(@Req() req, @Body() body: any) {
   // ✅ Role check
   if (!req.user || req.user.role !== 'superadmin') {
-    throw new UnauthorizedException('Only superadmins can access this API');
+    throw new ForbiddenException('Only superadmins can access this API');
   }
 
   // ✅ schoolId lazmi check
@@ -110,7 +111,7 @@ async getSchoolById(@Param('id') id: string) {
 @Get('GetSuperAdminOverview')
 async getSuperAdminOverview(@Req() req: any) {
   if (!req.user || req.user.role !== 'superadmin') {
-    throw new UnauthorizedException('Only superadmins can access this API');
+    throw new ForbiddenException('Only superadmins can access this API');
   }
   return this.adminService.getSuperAdminOverview();
 }
@@ -125,7 +126,7 @@ async getAllSchoolsBySuperAdmin(
 ) {
   // JWT user check
   if (!req.user || req.user.role !== 'superadmin') {
-    throw new UnauthorizedException('Only superadmins can access this API');
+    throw new ForbiddenException('Only superadmins can access this API');
   }
 
   // pagination convert
@@ -178,7 +179,7 @@ async getAllSchoolsBySuperAdmin(
     @Get('getAllSchools')
 async getAllSchools(@Req() req: any) {
   if (!req.user || req.user.role !== 'superadmin') {
-    throw new UnauthorizedException('Only superadmins can access this API');
+    throw new ForbiddenException('Only superadmins can access this API');
   }
   return this.adminService.getallschool();
 }
@@ -399,7 +400,7 @@ async getStudentsBySuperAdmin(
   @Get("getStudentByIdForSuperAdmin/:id")
 async getStudentByIdForSuperAdmin(@Param("id") id: string, @Req () req: any,) {
   if (!req.user || req.user.role !== 'superadmin') {
-    throw new UnauthorizedException('Only superadmins can access this API');
+    throw new ForbiddenException('Only superadmins can access this API');
   }
   return this.adminService.getKidByIdForSuperAdmin(id);
 }
@@ -425,7 +426,7 @@ async getAllDriversForSuperAdmin(
   // (optional but recommended 🔥)
   // agar role field hai token me
   if (user.role !== 'superadmin') {
-    throw new UnauthorizedException('Only superadmin can access this');
+    throw new ForbiddenException('Only superadmin can access this');
   }
 
   // page & limit convert

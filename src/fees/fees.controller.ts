@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Body, Req, Query, UseGuards, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Req, Query, UseGuards, UnauthorizedException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Types } from 'mongoose';
 import { FeesService } from './fees.service';
@@ -39,7 +39,7 @@ export class FeesController {
 
     if (req.user?.role === 'school_staff') {
       if (!(req.user.permissions || []).includes('manage_fees')) {
-        throw new UnauthorizedException('Insufficient permissions');
+        throw new ForbiddenException('Insufficient permissions');
       }
       if (!req.user.schoolId) {
         throw new UnauthorizedException('School not found for this staff account');

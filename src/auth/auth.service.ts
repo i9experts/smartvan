@@ -1008,7 +1008,43 @@ async changeNotificationToggle(
   }
 }
 
+async updateFcmToken(
+  userId: string,
+  userType: string,
+  fcmToken: string,
+) {
+  try {
+    if (!userId || !userType) {
+      throw new BadRequestException('userId and userType are required');
+    }
+    if (!fcmToken) {
+      throw new BadRequestException('fcmToken is required');
+    }
 
+    const userModel = await this.getUserModel(userType);
+
+    const user = await userModel.findOne({
+      _id: userId,
+      isDelete: false,
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    user.fcmToken = fcmToken;
+    await user.save();
+
+    return {
+      message: 'FCM token updated successfully',
+      data: {
+        userId: user._id,
+      },
+    };
+  } catch (error) {
+    throw error;
+  }
+}
 
  }
 

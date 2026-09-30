@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Delete, Body, Param, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Body, Param, Req, UnauthorizedException, ForbiddenException, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { EmployeeService } from './employee.service';
 
@@ -16,7 +16,7 @@ export class EmployeeController {
   @Get('permissions')
   async getAvailablePermissions(@Req() req: any) {
     if (req.user.role !== 'superadmin') {
-      throw new UnauthorizedException('Only superadmins can access this API');
+      throw new ForbiddenException('Only superadmins can access this API');
     }
     return this.employeeService.getAvailablePermissions();
   }
@@ -25,7 +25,7 @@ export class EmployeeController {
   @Post('create')
   async createEmployee(@Req() req: any, @Body() body: any) {
     if (req.user.role !== 'superadmin') {
-      throw new UnauthorizedException('Only superadmins can access this API');
+      throw new ForbiddenException('Only superadmins can access this API');
     }
     return this.employeeService.createEmployee(req.user.userId, body, req.user);
   }
@@ -34,7 +34,7 @@ export class EmployeeController {
   @Get('all')
   async getAllEmployees(@Req() req: any) {
     if (req.user.role !== 'superadmin') {
-      throw new UnauthorizedException('Only superadmins can access this API');
+      throw new ForbiddenException('Only superadmins can access this API');
     }
     return this.employeeService.getAllEmployees();
   }
@@ -43,7 +43,7 @@ export class EmployeeController {
   @Patch(':id')
   async updateEmployee(@Req() req: any, @Param('id') id: string, @Body() body: any) {
     if (req.user.role !== 'superadmin') {
-      throw new UnauthorizedException('Only superadmins can access this API');
+      throw new ForbiddenException('Only superadmins can access this API');
     }
     return this.employeeService.updateEmployee(id, body, req.user);
   }
@@ -52,7 +52,7 @@ export class EmployeeController {
   @Delete(':id')
   async deleteEmployee(@Req() req: any, @Param('id') id: string) {
     if (req.user.role !== 'superadmin') {
-      throw new UnauthorizedException('Only superadmins can access this API');
+      throw new ForbiddenException('Only superadmins can access this API');
     }
     return this.employeeService.deleteEmployee(id, req.user);
   }
@@ -61,7 +61,7 @@ export class EmployeeController {
   @Post('assign-ticket')
   async assignTicket(@Req() req: any, @Body() body: { reportId: string; employeeId: string }) {
     if (req.user.role !== 'superadmin' && !(req.user.permissions || []).includes('manage_tickets')) {
-      throw new UnauthorizedException('Insufficient permissions');
+      throw new ForbiddenException('Insufficient permissions');
     }
     return this.employeeService.assignTicket(body.reportId, body.employeeId, req.user);
   }
@@ -70,7 +70,7 @@ export class EmployeeController {
   @Get('my-tickets')
   async getMyTickets(@Req() req: any) {
     if (req.user.role !== 'employee') {
-      throw new UnauthorizedException('Only employees can access this API');
+      throw new ForbiddenException('Only employees can access this API');
     }
     return this.employeeService.getMyTickets(req.user.userId);
   }
@@ -79,7 +79,7 @@ export class EmployeeController {
   @Patch('my-tickets/:id/status')
   async updateMyTicketStatus(@Req() req: any, @Param('id') id: string, @Body() body: { status: string; adminRemarks?: string }) {
     if (req.user.role !== 'employee') {
-      throw new UnauthorizedException('Only employees can access this API');
+      throw new ForbiddenException('Only employees can access this API');
     }
     return this.employeeService.updateMyTicketStatus(req.user.userId, id, body.status, body.adminRemarks);
   }

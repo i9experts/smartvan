@@ -150,6 +150,16 @@ async changeNotificationToggle(
   );
 }
 
+@UseGuards(AuthGuard('jwt'))
+@Post('updateFcmToken')
+async updateFcmToken(
+  @Req() req: any,
+  @Body('fcmToken') fcmToken: string,
+) {
+  const { userId, userType } = req.user;
+  return this.authService.updateFcmToken(userId, userType, fcmToken);
+}
+
 }
 
 
