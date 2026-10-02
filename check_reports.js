@@ -1,7 +1,8 @@
 const { MongoClient } = require('mongodb');
+if (!process.env.MONGODB_URI) { console.error('Set MONGODB_URI first, e.g. MONGODB_URI="mongodb+srv://..." node <script>'); process.exit(1); }
 
 async function run() {
-  const client = new MongoClient('mongodb+srv://waliiqbal2020:QwXfF6vnGHPDih1W@cluster0.gqktgu9.mongodb.net/smartvan?retryWrites=true&w=majority');
+  const client = new MongoClient(process.env.MONGODB_URI);
   await client.connect();
   const db = client.db('smartvan');
 

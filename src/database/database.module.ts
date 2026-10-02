@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Global, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import * as schema from './schema';
 import { DatabaseService } from './databaseservice'
 
@@ -9,10 +9,20 @@ import { DatabaseService } from './databaseservice'
 @Module({
   imports: [
     ConfigModule.forRoot(),
-    // MongooseModule.forRoot(process.env.MONGODB_URI),
-    MongooseModule.forRoot(
-  'mongodb+srv://waliiqbal2020:QwXfF6vnGHPDih1W@cluster0.gqktgu9.mongodb.net/smartvan?retryWrites=true&w=majority'
-),
+    // Connection string comes from the environment — never commit it.
+    MongooseModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const uri = config.get<string>('MONGODB_URI');
+        if (!uri) {
+          throw new Error(
+            'MONGODB_URI is not set. Add it to .env (local/VPS) or the Railway service variables.',
+          );
+        }
+        return { uri };
+      },
+    }),
 
     MongooseModule.forFeature([
        { name: 'Parent', schema: schema.UserSchema, collection: 'parents' },
