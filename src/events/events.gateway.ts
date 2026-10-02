@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 
+import { userRoom } from 'src/chat/chat.util';
 import {
   ConnectedSocket,
   MessageBody,
@@ -48,7 +49,6 @@ afterInit(server: Server) {
       socket.handshake.auth?.token ||
       socket.handshake.headers["authorization"] ||
       socket.handshake.query?.token;
-    console.log("Raw token:", token);
 
     if (!token) {
       return next(new Error("No token provided"));
@@ -61,7 +61,6 @@ afterInit(server: Server) {
     try {
       const secret = this.configService.get<string>('JWT_SECRET');
       const payload: any = verify(token, secret);
-      console.log("Verified JWT payload:", payload);
       socket.decoded_token = payload;
       next();
     } catch (err) {
@@ -73,6 +72,9 @@ afterInit(server: Server) {
 
   async handleConnection(socket: CustomSocket) {
     console.log('Socket connected:', socket.id);
+    // Personal room for chat and other per-user events.
+    const uid = socket?.decoded_token?.userId || socket?.decoded_token?.sub;
+    if (uid) socket.join(userRoom(String(uid)));
     const payload = {
       ok: true,
       socketId: socket.id,
