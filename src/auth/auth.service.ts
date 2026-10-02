@@ -84,7 +84,9 @@ async registerUser(registerDto: RegisterDto) {
         await existingUser.save();
 
         // OTP send karo
-        await this.otpService.sendOtp(email, existingUser.otp);
+        this.otpService.sendOtp(email, existingUser.otp).catch((err) => {
+          console.error('Failed to send registration OTP email:', err.message);
+        });
 
         return {
           message: 'Your account was deleted before, we have reactivated it. OTP sent again.',
@@ -117,7 +119,9 @@ async registerUser(registerDto: RegisterDto) {
     const user = new userModel(userData);
     await user.save();
 
-    await this.otpService.sendOtp(email, otp);
+    this.otpService.sendOtp(email, otp).catch((err) => {
+      console.error('Failed to send registration OTP email:', err.message);
+    });
 
     return {
       message: 'OTP sent successfully to your email/phone',
@@ -240,7 +244,9 @@ async resendOtp(email: string, userType: string) {
     user.otpExpiresAt = otpExpiresAt;
     await user.save();
 
-    await this.otpService.sendOtp(user.email, newOtp);
+    this.otpService.sendOtp(user.email, newOtp).catch((err) => {
+      console.error('Failed to send OTP email:', err.message);
+    });
 
     return {
       message: 'New OTP sent successfully to your email',
@@ -609,7 +615,9 @@ async forgotPassword(email: string, userType: string) {
     await user.save();
 
     // 📧 Step 5: Send OTP to user's email
-    await this.otpService.sendOtp(user.email, otp);
+    this.otpService.sendOtp(user.email, otp).catch((err) => {
+      console.error('Failed to send OTP email:', err.message);
+    });
 
     // ✅ Step 6: Response return
     return {
@@ -685,7 +693,9 @@ async resendOtpForResetPassword(email: string, userType: string) {
     user.otpExpiresAt = otpExpiresAt;
     await user.save();
 
-    await this.otpService.sendOtp(user.email, newOtp);
+    this.otpService.sendOtp(user.email, newOtp).catch((err) => {
+      console.error('Failed to send OTP email:', err.message);
+    });
 
     return {
       message: 'OTP sent successfully to your email for password reset',
