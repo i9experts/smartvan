@@ -7,6 +7,8 @@ import { EndTripDto } from './dto/tripend.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { getLocationDto } from './dto/getLocations';
+import { ScanStudentDto } from './dto/scan-student.dto';
+import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
 import { DatabaseService } from 'src/database/databaseservice';
 
 @Controller('trips')
@@ -32,6 +34,33 @@ export class TripController {
   @Post('pickStudent')
   async pickStudent(@Body() pickStudentDto: PickStudentDto, @Req() req: any) {
     return this.tripService.pickStudent(req.user.userId, pickStudentDto);
+  }
+
+  // ─── Pre-trip vehicle checklist (driver) ─────────────────────────────
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('checklist/items')
+  async getChecklistItems() {
+    return this.tripService.getChecklistItems();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('checklist/today')
+  async getTodayChecklist(@Req() req: any) {
+    return this.tripService.getTodayChecklist(req.user.userId);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('checklist')
+  async submitChecklist(@Body() dto: SubmitChecklistDto, @Req() req: any) {
+    return this.tripService.submitChecklist(req.user.userId, dto);
+  }
+
+  /** Driver scans a student's QR card → pick or drop. */
+  @UseGuards(AuthGuard('jwt'))
+  @Post('scanStudent')
+  async scanStudent(@Body() dto: ScanStudentDto, @Req() req: any) {
+    return this.tripService.scanStudent(req.user.userId, dto);
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -124,15 +153,23 @@ export class TripController {
   @Post('updateLocation/:tripId')
   async updateLocation(
     @Param('tripId') tripId: string,
-    @Body() body: { lat: number; lng: number },
+    @Body() body: { lat: number; lng: number; speed?: number },
     @Req() req: any,
   ) {
     return this.tripService.updateLocationAndBroadcastETA(
       req.user.userId,
       tripId,
-      body.lat,
-      body.lng,
+      Number(body.lat),
+      Number(body.lng),
+      body.speed,
     );
+  }
+
+  /** Driver's own stats for the last ?days= (default 7, max 90). */
+  @UseGuards(AuthGuard('jwt'))
+  @Get('driver-stats')
+  async getDriverStats(@Req() req: any, @Query('days') days?: string) {
+    return this.tripService.getDriverStats(req.user.userId, Number(days) || 7);
   }
   // ─── Digital Attendance ─────────────────────────────────────────────────
 

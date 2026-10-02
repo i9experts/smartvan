@@ -18,6 +18,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 
 import { alertService } from './alert.service';
 import { AddAlertDto } from './dto/addAlertdto';
+import { DriverSosDto } from './dto/driver-sos.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 
@@ -566,6 +567,14 @@ async deleteSupportLink(@Body('id') id: string) {
 async sendAlertByDriver(@Req() req: any, @Body() body: { message?: string; audioUrl?: string }) {
   const driverId = req.user.userId;
   return this.AlertService.sendAlertByDriver(driverId, body.message, body.audioUrl);
+}
+
+// Driver emergency button. See alertService.sendSosByDriver.
+@UseGuards(AuthGuard('jwt'))
+@Post('sos')
+async sendSosByDriver(@Req() req: any, @Body() body: DriverSosDto) {
+  // The service verifies the caller exists in the drivers collection.
+  return this.AlertService.sendSosByDriver(req.user.userId, body);
 }
 
 @UseGuards(AuthGuard('jwt'))

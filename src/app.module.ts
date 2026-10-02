@@ -1,3 +1,4 @@
+import { ChatModule } from './chat/chat.module';
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -38,6 +39,7 @@ import { ContactController } from './admin/contact.controller';
 
 @Module({
   imports: [
+    ChatModule,
     // ✅ Load .env globally
     ConfigModule.forRoot({
       isGlobal: true,

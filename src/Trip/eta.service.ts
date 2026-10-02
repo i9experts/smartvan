@@ -2,7 +2,12 @@
 import { Injectable } from '@nestjs/common';
 import { Client, TravelMode } from '@googlemaps/google-maps-services-js';
 
-const GOOGLE_API_KEY = 'AIzaSyAWyTey_qT1z2OyjAr0gH3eIGUGYQWpipo';
+// Server-side key for the Distance Matrix API. Use a separate key from the
+// mobile apps, restricted by server IP + Distance Matrix API only.
+const GOOGLE_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
+if (!GOOGLE_API_KEY) {
+  console.warn('[EtaService] GOOGLE_MAPS_API_KEY is not set — ETA calculation will fail.');
+}
 
 export interface ETAResult {
   destinationName: string;

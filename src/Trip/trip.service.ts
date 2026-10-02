@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, UnauthorizedException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { PickStudentDto } from './dto/pick-student.dto';
 import mongoose from 'mongoose';
@@ -19,6 +19,30 @@ import { EndTripDto } from './dto/tripend.dto';
 import { getLocationDto } from './dto/getLocations';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { Kid } from 'src/Kid/kid.schema';
+import { EventsGateway } from 'src/events/events.gateway';
+import { findUndroppedKidIds, requiresDropConfirmation } from './trip-safety.util';
+import { decideScanAction } from './scan-action.util';
+import {
+  etaPushToSend,
+  MAX_SEGMENT_METERS,
+  overspeedLimitKmh,
+  speedKmh,
+  waitingKidIds,
+} from './location-pipeline.util';
+
+type CachedEta = { kidId: string; minutes: number; etaTime: string; distanceMeters: number };
+/** tripId → last Distance Matrix result (single-instance cache). */
+const etaCache = new Map<string, { at: number; eta: CachedEta[] }>();
+const ETA_REFRESH_MS = 60_000;
+import { ScanStudentDto } from './dto/scan-student.dto';
+import { parseQrPayload } from 'src/Kid/kid-qr.util';
+import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
+import {
+  checklistDate,
+  checklistItemDefs,
+  isChecklistRequired,
+  validateChecklistItems,
+} from './pretrip-checklist.util';
 @Injectable()
 export class TripService {
   constructor(
@@ -26,7 +50,296 @@ export class TripService {
    private firebaseAdminService: FirebaseAdminService,
    private readonly etaService: EtaService,
    private readonly geofenceService: GeofenceService,
+   private readonly eventsGateway: EventsGateway,
   ) {} 
+
+// ─── Pre-trip vehicle checklist ─────────────────────────────────────────
+
+private async driverAndVan(driverId: string) {
+  const driverObjectId = new Types.ObjectId(driverId);
+  const driver: any = await this.databaseService.repositories.driverModel.findById(driverObjectId).lean();
+  if (!driver) throw new UnauthorizedException('Driver not found');
+  const van: any = await this.databaseService.repositories.VanModel.findOne({ driverId: driverObjectId }).lean();
+  if (!van) throw new BadRequestException('Van not assigned to this driver');
+  return { driver, van };
+}
+
+getChecklistItems() {
+  return {
+    success: true,
+    data: checklistItemDefs(),
+    required: isChecklistRequired(),
+  };
+}
+
+async getTodayChecklist(driverId: string) {
+  const { van } = await this.driverAndVan(driverId);
+  const doc = await this.databaseService.repositories.pretripChecklistModel
+    .findOne({ vanId: van._id.toString(), date: checklistDate(TZ) })
+    .lean();
+  return { success: true, data: doc || null, required: isChecklistRequired() };
+}
+
+async submitChecklist(driverId: string, dto: SubmitChecklistDto) {
+  const { driver, van } = await this.driverAndVan(driverId);
+
+  const error = validateChecklistItems(dto?.items, checklistItemDefs());
+  if (error) {
+    throw new BadRequestException({ success: false, code: 'INVALID_CHECKLIST', message: error });
+  }
+
+  const items = dto.items.map((i) => ({
+    key: i.key,
+    ok: i.ok,
+    ...(i.note && i.note.trim() ? { note: i.note.trim().slice(0, 500) } : {}),
+  }));
+  const failed = items.filter((i) => !i.ok);
+  const date = checklistDate(TZ);
+
+  const doc = await this.databaseService.repositories.pretripChecklistModel.findOneAndUpdate(
+    { vanId: van._id.toString(), date },
+    {
+      $set: {
+        driverId: driver._id.toString(),
+        schoolId: van.schoolId,
+        routeId: dto.routeId,
+        items,
+        photoUrl: dto.photoUrl,
+        allOk: failed.length === 0,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  ).lean();
+
+  if (failed.length) {
+    const labels = new Map(checklistItemDefs().map((d) => [d.key, d.label]));
+    const issues = failed.map((f) => (labels.get(f.key) || f.key) + (f.note ? ` (${f.note})` : ''));
+    const driverName = driver.fullname || 'Driver';
+    const message = `${driverName} reported van issues in the pre-trip check` +
+      `${van.carNumber ? ` (van ${van.carNumber})` : ''}: ${issues.join('; ')}`;
+    try {
+      const alert = await this.databaseService.repositories.notificationModel.create({
+        type: 'pretrip_issue',
+        alertType: 'PRETRIP_CHECK_FAILED',
+        recipientType: 'ADMIN',
+        infoType: 'Warning',
+        driverId: driver._id.toString(),
+        schoolId: van.schoolId,
+        VanId: van._id.toString(),
+        title: 'Van check issues',
+        message,
+        status: 'sent',
+        date: new Date(),
+      });
+      this.eventsGateway.emitToSchool(van.schoolId, 'pretripChecklistAlert', {
+        alertId: alert._id.toString(),
+        checklistId: (doc as any)?._id?.toString(),
+        driverId: driver._id.toString(),
+        driverName,
+        vanId: van._id.toString(),
+        failedItems: failed,
+        photoUrl: dto.photoUrl,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error('[checklist] admin alert failed:', e);
+    }
+  }
+
+  return {
+    success: true,
+    message: failed.length
+      ? 'Checklist saved. The school has been told about the issues.'
+      : 'Checklist saved',
+    data: doc,
+  };
+}
+
+// ─── QR scan pickup / drop ──────────────────────────────────────────────
+
+/**
+ * Driver scans a student's QR card. Decides pick vs drop from the kid's
+ * state on this trip, then delegates to the existing pick/drop methods
+ * (which do all the driver/van/trip ownership checks and notifications).
+ */
+async scanStudent(driverId: string, dto: ScanStudentDto) {
+  const fail = (code: string, message: string) =>
+    new BadRequestException({ success: false, code, message });
+
+  const token = parseQrPayload(dto?.qrPayload);
+  if (!token) throw fail('INVALID_QR', 'This is not a SmartVan student card.');
+
+  if (!dto.tripId || !Types.ObjectId.isValid(dto.tripId)) {
+    throw fail('TRIP_NOT_FOUND', 'Trip not found');
+  }
+  const repos = this.databaseService.repositories;
+  const trip: any = await repos.TripModel.findById(dto.tripId).lean();
+  if (!trip) throw fail('TRIP_NOT_FOUND', 'Trip not found');
+  if (trip.status !== 'ongoing') throw fail('TRIP_NOT_ONGOING', 'This trip is not in progress.');
+
+  const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }).lean();
+  if (!van || trip.vanId !== van._id.toString()) {
+    throw fail('TRIP_NOT_YOURS', 'This trip does not belong to your van.');
+  }
+
+  const kid: any = await repos.KidModel.findOne({ qrToken: token }, { fullname: 1, VanId: 1, status: 1 }).lean();
+  if (!kid) throw fail('INVALID_QR', 'Card not recognised. It may have been replaced — ask the school for a new one.');
+  const kidId = kid._id.toString();
+
+  // Kid must belong to this van / route.
+  let onTrip = kid.VanId === trip.vanId;
+  if (!onTrip && trip.routeId) {
+    const route: any = await repos.routeModel.findById(trip.routeId, { kidLocations: 1 }).lean();
+    onTrip = (route?.kidLocations || []).some((kl: any) => kl?.kidId?.toString() === kidId);
+  }
+  if (!onTrip) throw fail('KID_NOT_ON_TRIP', `${kid.fullname || 'This student'} is not a passenger on this van.`);
+
+  const action = decideScanAction(trip.type, kidId, trip.kids);
+  const base = { kidId, fullname: kid.fullname, tripId: dto.tripId };
+
+  switch (action) {
+    case 'alreadyPicked':
+      throw fail('ALREADY_PICKED', `${kid.fullname || 'This student'} is already picked up. Students are dropped at school when you end the trip.`);
+    case 'alreadyDropped':
+      throw fail('ALREADY_DROPPED', `${kid.fullname || 'This student'} has already been dropped on this trip.`);
+    case 'pick':
+      await this.pickStudent(driverId, { tripId: dto.tripId, kidId, lat: dto.lat, long: dto.lng });
+      return { success: true, message: `${kid.fullname} picked up`, data: { action: 'picked', ...base } };
+    case 'pickFromSchool':
+      await this.pickStudentsFromSchool(driverId, { tripId: dto.tripId, kidId });
+      return { success: true, message: `${kid.fullname} picked from school`, data: { action: 'picked', ...base } };
+    case 'drop':
+      if (typeof dto.lat !== 'number' || typeof dto.lng !== 'number') {
+        throw fail('LOCATION_REQUIRED', 'Your GPS location is required to record a drop.');
+      }
+      await this.dropStudentForHome(driverId, { tripId: dto.tripId, kidId, lat: dto.lat, long: dto.lng });
+      return { success: true, message: `${kid.fullname} dropped`, data: { action: 'dropped', ...base } };
+  }
+}
+
+// ─── Child-left-behind safety check ─────────────────────────────────────
+
+/**
+ * For drop trips: refuses to end the trip while any kid is still marked as
+ * picked (i.e. possibly still in the van), unless the driver explicitly
+ * forces it with a note. Returns the undropped kids when forced.
+ */
+private async checkKidsDroppedBeforeEnd(
+  trip: any,
+  dto: EndTripDto,
+): Promise<{ kidId: string; fullname: string }[]> {
+  if (!requiresDropConfirmation(trip.type)) return [];
+
+  const undroppedIds = findUndroppedKidIds(trip.kids);
+  if (!undroppedIds.length) return [];
+
+  const docs = await this.databaseService.repositories.KidModel.find(
+    { _id: { $in: undroppedIds.map((id) => new Types.ObjectId(id)) } },
+    { fullname: 1 },
+  ).lean();
+  const nameById = new Map(docs.map((d: any) => [d._id.toString(), d.fullname]));
+  const kids = undroppedIds.map((id) => ({ kidId: id, fullname: nameById.get(id) || 'Student' }));
+
+  if (!dto.forceEnd) {
+    throw new ConflictException({
+      success: false,
+      code: 'KIDS_NOT_DROPPED',
+      message:
+        `${kids.length} student${kids.length === 1 ? ' is' : 's are'} still marked as in the van: ` +
+        `${kids.map((k) => k.fullname).join(', ')}. Drop them first, or check the van and confirm.`,
+      kids,
+    });
+  }
+
+  if (!dto.confirmationNote || !dto.confirmationNote.trim()) {
+    throw new BadRequestException({
+      success: false,
+      code: 'CONFIRMATION_NOTE_REQUIRED',
+      message: 'A confirmation note is required to end the trip with students not dropped.',
+    });
+  }
+  return kids;
+}
+
+/** Alerts the school and the affected parents after a forced trip end. */
+private async notifyForcedEnd(
+  trip: any,
+  van: any,
+  driver: any,
+  kids: { kidId: string; fullname: string }[],
+  note: string,
+) {
+  const names = kids.map((k) => k.fullname).join(', ');
+  const driverName = driver?.fullname || 'Driver';
+  const message =
+    `${driverName} ended a drop trip with ${kids.length} student(s) not marked as dropped: ` +
+    `${names}. Driver note: "${note}"`;
+
+  try {
+    const alert = await this.databaseService.repositories.notificationModel.create({
+      type: 'child_left_behind',
+      alertType: 'KIDS_NOT_DROPPED',
+      recipientType: 'ADMIN',
+      infoType: 'Emergency',
+      driverId: driver?._id?.toString(),
+      schoolId: van.schoolId,
+      VanId: van._id.toString(),
+      title: 'Students not dropped',
+      message,
+      status: 'sent',
+      date: new Date(),
+    });
+
+    this.eventsGateway.emitToSchool(van.schoolId, 'childLeftBehindAlert', {
+      alertId: alert._id.toString(),
+      tripId: trip._id.toString(),
+      driverId: driver?._id?.toString(),
+      driverName,
+      vanId: van._id.toString(),
+      kids,
+      note,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[endTrip] admin alert for undropped kids failed:', e);
+  }
+
+  // Parents of these kids must not believe their child was dropped.
+  for (const k of kids) {
+    try {
+      const kid = await this.databaseService.repositories.KidModel.findById(k.kidId);
+      if (!kid?.parentId) continue;
+      const parent = await this.databaseService.repositories.parentModel.findOne({
+        _id: kid.parentId,
+        isDelete: false,
+      });
+      const title = 'Drop not confirmed';
+      const body = `The van trip has ended but ${kid.fullname}'s drop-off was not confirmed by the driver. Please contact the school.`;
+      if (parent?.fcmToken) {
+        // Sent even if the parent muted notifications — this is a safety alert.
+        await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+          notification: { title, body },
+          data: { type: 'drop_not_confirmed', kidId: k.kidId, tripId: trip._id.toString() },
+        });
+      }
+      await this.databaseService.repositories.notificationModel.create({
+        type: 'driver',
+        infoType: 'Emergency',
+        parentId: kid.parentId.toString(),
+        schoolId: van.schoolId,
+        VanId: van._id.toString(),
+        title,
+        message: body,
+        actionType: 'DROP_NOT_CONFIRMED',
+        status: 'sent',
+        date: new Date(),
+      });
+    } catch (e) {
+      console.error('[endTrip] parent alert for undropped kid failed:', e);
+    }
+  }
+}
+
 
 
 
@@ -493,8 +806,13 @@ async endTrip(driverId, dto: EndTripDto) {
     throw new BadRequestException("Van does not belong to this trip");
   }
 
-  // 4️⃣ Update trip kids status
-  trip.kids = trip.kids.map(kid => ({
+  // 🛡️ Child-left-behind check (drop trips). Throws 409 unless forced.
+  const forcedKids = await this.checkKidsDroppedBeforeEnd(trip, dto);
+  const forcedIds = new Set(forcedKids.map(k => k.kidId));
+
+  // 4️⃣ Update trip kids status (kids from a forced end stay 'picked' —
+  // nobody confirmed they got off the van).
+  trip.kids = trip.kids.map(kid => forcedIds.has(kid.kidId?.toString()) ? kid : ({
     ...kid,
     status: 'dropped',
     time: time ? new Date(time) : new Date(),
@@ -515,8 +833,14 @@ async endTrip(driverId, dto: EndTripDto) {
   // 🔥 NEW LOGIC STARTS HERE
   // ===============================
 
-  // 5️⃣ Get all kids data
-  const kidIds = trip.kids.map(k => new Types.ObjectId(k.kidId));
+  if (forcedKids.length) {
+    await this.notifyForcedEnd(trip, van, driver, forcedKids, dto.confirmationNote.trim());
+  }
+
+  // 5️⃣ Get all kids data (only kids actually dropped get "safely dropped")
+  const kidIds = trip.kids
+    .filter(k => !forcedIds.has(k.kidId?.toString()))
+    .map(k => new Types.ObjectId(k.kidId));
 
   const kids = await this.databaseService.repositories.KidModel.find(
     { _id: { $in: kidIds } },
@@ -590,6 +914,7 @@ async endTrip(driverId, dto: EndTripDto) {
   return {
     message: "Trip ended, notifications sent & saved",
     data: trip,
+    ...(forcedKids.length ? { undroppedKids: forcedKids } : {}),
   };
 }
 
@@ -634,6 +959,21 @@ async startTrip(driverId: string, createTripDto: CreateTripDto) {
 
   if (!route.startTime) {
     throw new BadRequestException('Route start time not defined');
+  }
+
+  // 🛡️ Pre-trip vehicle check (opt-in via REQUIRE_PRETRIP_CHECKLIST=true)
+  if (isChecklistRequired()) {
+    const done = await this.databaseService.repositories.pretripChecklistModel.exists({
+      vanId: van._id.toString(),
+      date: checklistDate(TZ),
+    });
+    if (!done) {
+      throw new ConflictException({
+        success: false,
+        code: 'CHECKLIST_REQUIRED',
+        message: 'Please complete today\'s vehicle checklist before starting a trip.',
+      });
+    }
   }
 
   // 4️⃣ ⏰ Time validation (1 hour window)
@@ -878,6 +1218,9 @@ async endTripForDrop(driverId, dto: EndTripDto) {
     throw new BadRequestException("Trip already ended");
   }
 
+  // 🛡️ Child-left-behind check. Throws 409 unless forced.
+  const forcedKids = await this.checkKidsDroppedBeforeEnd(trip, dto);
+
   // ❌ NO kids update
 
   // 4️⃣ End trip only
@@ -890,9 +1233,14 @@ async endTripForDrop(driverId, dto: EndTripDto) {
 
   await trip.save();
 
+  if (forcedKids.length) {
+    await this.notifyForcedEnd(trip, van, driver, forcedKids, dto.confirmationNote.trim());
+  }
+
   return {
     message: "Drop trip ended successfully",
     data: trip,
+    ...(forcedKids.length ? { undroppedKids: forcedKids } : {}),
   };
 }
 
@@ -1376,24 +1724,71 @@ async generateGraphData(
     };
   }
 
+  /**
+   * Called by the driver app every few seconds during a trip.
+   *
+   * 1. Verifies the trip is ongoing and belongs to the caller's van.
+   * 2. Stores the point, accumulates distance, records overspeed.
+   * 3. Geofence: school zone + home zones of kids still WAITING for the van
+   *    (pick trip: not picked yet; drop trip: in the van).
+   * 4. ETA to each waiting kid's stop, at most once a minute per trip
+   *    (Distance Matrix is billed per element). Each parent gets one push at
+   *    ~10 min and one at ~3 min — previously every location update pushed
+   *    "Van is on the way" to every parent.
+   * 5. Socket 'etaUpdate' to the trip room with per-kid minutes.
+   */
   async updateLocationAndBroadcastETA(
     driverId: string,
     tripId: string,
     lat: number,
     lng: number,
+    speedMs?: number,
   ) {
-    // 1. Save location to trip
-    const trip = await this.databaseService.repositories.TripModel.findById(tripId);
-    if (!trip) throw new Error('Trip not found');
+    if (typeof lat !== 'number' || typeof lng !== 'number' ||
+        Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      throw new BadRequestException('Valid lat and lng are required');
+    }
+    if (!Types.ObjectId.isValid(tripId)) throw new NotFoundException('Trip not found');
 
-    trip.locations.push({ lat, long: lng, time: new Date() });
+    const repos = this.databaseService.repositories;
+    const trip = await repos.TripModel.findById(tripId);
+    if (!trip) throw new NotFoundException('Trip not found');
+    if (trip.status !== 'ongoing') {
+      throw new BadRequestException({ success: false, code: 'TRIP_NOT_ONGOING', message: 'Trip is not in progress' });
+    }
+    const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }).lean();
+    if (!van || trip.vanId !== van._id.toString()) {
+      throw new UnauthorizedException('This trip does not belong to your van');
+    }
 
-    // 2. Get previous geofence state from trip (stored as custom field)
+    // ── 2. Point, distance, speed ────────────────────────────────────────
+    const now = new Date();
+    const last = trip.locations[trip.locations.length - 1];
+    if (last) {
+      const seg = this.geofenceService.getDistanceMeters(last.lat, last.long, lat, lng);
+      if (seg <= MAX_SEGMENT_METERS) trip.distanceMeters = (trip.distanceMeters || 0) + seg;
+    }
+    trip.locations.push({ lat, long: lng, time: now });
+
+    const kmh = speedKmh(speedMs);
+    let overspeed: { speedKmh: number; limitKmh: number } | null = null;
+    if (kmh !== null) {
+      if (kmh > (trip.maxSpeedKmh || 0)) trip.maxSpeedKmh = kmh;
+      const limit = overspeedLimitKmh();
+      if (kmh > limit) {
+        const lastEvt = trip.overspeedEvents[trip.overspeedEvents.length - 1];
+        // One recorded event per minute of continuous speeding.
+        if (!lastEvt || now.getTime() - new Date(lastEvt.time).getTime() > 60_000) {
+          trip.overspeedEvents.push({ speedKmh: kmh, lat, long: lng, time: now });
+        }
+        overspeed = { speedKmh: kmh, limitKmh: limit };
+      }
+    }
+
+    // ── 3. Geofence ──────────────────────────────────────────────────────
     const prevInsideZones: string[] = trip.insideZoneIds || [];
-
-    // 3. Build zones list
     const zones: GeofenceZone[] = [];
-    const school = await this.databaseService.repositories.SchoolModel.findById(trip.schoolId);
+    const school = await repos.SchoolModel.findById(trip.schoolId);
     if (school?.lat && school?.long) {
       zones.push({
         id: 'school_' + school._id.toString(),
@@ -1405,51 +1800,42 @@ async generateGraphData(
       });
     }
 
-    // Home zones for pending kids
-    const route = await this.databaseService.repositories.routeModel.findById(trip.routeId);
-    const pendingKids = trip.kids.filter(k => k.status !== 'dropped');
+    const route = await repos.routeModel.findById(trip.routeId);
+    const routeKidIds = (route?.kidLocations || []).map(kl => kl.kidId.toString());
+    const waiting = new Set(waitingKidIds(trip.type, routeKidIds, trip.kids));
 
-    if (route?.kidLocations?.length) {
-      for (const kl of route.kidLocations) {
-        const isPending = pendingKids.some(k => k.kidId === kl.kidId.toString());
-        if (!isPending) continue;
-
-        const kid = await this.databaseService.repositories.KidModel.findById(kl.kidId);
-        if (!kid?.parentId) continue;
-
-        const parent = await this.databaseService.repositories.parentModel.findOne({
-          _id: kid.parentId, isDelete: false,
-        });
-
-        zones.push({
-          id: 'home_' + kl.kidId.toString(),
-          name: kid.fullname || 'Student Home',
-          lat: kl.lat,
-          lng: kl.long,
-          radiusMeters: 100,
-          type: 'home',
-          kidId: kl.kidId.toString(),
-          parentId: kid.parentId.toString(),
-          parentFcmToken: parent?.fcmToken || undefined,
-        });
-      }
+    // kidId → { stop, kid, parent } for waiting kids
+    const stops = new Map<string, { lat: number; lng: number; kid: any; parent: any }>();
+    for (const kl of route?.kidLocations || []) {
+      const kidId = kl.kidId.toString();
+      if (!waiting.has(kidId) || stops.has(kidId)) continue;
+      const kid: any = await repos.KidModel.findById(kl.kidId);
+      if (!kid) continue;
+      const parent: any = kid.parentId
+        ? await repos.parentModel.findOne({ _id: kid.parentId, isDelete: false })
+        : null;
+      stops.set(kidId, { lat: kl.lat, lng: kl.long, kid, parent });
+      zones.push({
+        id: 'home_' + kidId,
+        name: kid.fullname || 'Student Home',
+        lat: kl.lat,
+        lng: kl.long,
+        radiusMeters: 100,
+        type: 'home',
+        kidId,
+        parentId: kid.parentId?.toString(),
+        parentFcmToken: parent?.fcmToken || undefined,
+      });
     }
 
-    // 4. Check geofence zones
-    const { events, nowInsideZoneIds } = this.geofenceService.checkZones(
-      lat, lng, zones, prevInsideZones,
-    );
-
-    // 5. Save current zone state
+    const { events, nowInsideZoneIds } = this.geofenceService.checkZones(lat, lng, zones, prevInsideZones);
     trip.insideZoneIds = nowInsideZoneIds;
-    await trip.save();
+    const pendingKids = trip.kids.filter(k => k.status !== 'dropped');
 
-    // 6. Process geofence events — send FCM + save notifications
     for (const evt of events) {
       let title = '';
       let body = '';
       let actionType = '';
-
       if (evt.zoneType === 'school' && evt.event === 'entered') {
         title = 'Van reached school';
         body = 'The van has arrived at school.';
@@ -1462,39 +1848,41 @@ async generateGraphData(
         title = 'Van is nearby!';
         body = evt.zoneName + ' — van is arriving at your location.';
         actionType = 'GEOFENCE_HOME_ENTERED';
-      } else if (evt.zoneType === 'home' && evt.event === 'exited') {
-        title = 'Van has left your area';
-        body = 'The van has moved away from your location.';
-        actionType = 'GEOFENCE_HOME_EXITED';
+      } else {
+        // Leaving a home zone isn't useful to parents — skip the push.
+        continue;
       }
 
-      // Send FCM to parent
-      if (evt.parentFcmToken) {
-        try {
-          await this.firebaseAdminService.sendToDevice(evt.parentFcmToken, {
-            notification: { title, body },
-            data: {
-              tripId,
-              type: actionType,
-              zoneId: evt.zoneId,
-              zoneName: evt.zoneName,
-              kidId: evt.kidId || '',
-              driverLat: String(lat),
-              driverLng: String(lng),
-            },
-          });
-        } catch (e) {
-          console.error('Geofence FCM error:', e.message);
+      if (evt.zoneType === 'home') {
+        if (evt.parentFcmToken) {
+          try {
+            await this.firebaseAdminService.sendToDevice(evt.parentFcmToken, {
+              notification: { title, body },
+              data: {
+                tripId, type: actionType, zoneId: evt.zoneId, zoneName: evt.zoneName,
+                kidId: evt.kidId || '', driverLat: String(lat), driverLng: String(lng),
+              },
+            });
+          } catch (e) {
+            console.error('Geofence FCM error:', e.message);
+          }
         }
-      } else if (evt.zoneType === 'school') {
-        // School event — notify ALL parents of kids in this trip
-        for (const kidEntry of pendingKids) {
-          const kid = await this.databaseService.repositories.KidModel.findById(kidEntry.kidId);
-          if (!kid?.parentId) continue;
-          const parent = await this.databaseService.repositories.parentModel.findOne({
-            _id: kid.parentId, isDelete: false,
+        if (evt.parentId) {
+          await repos.notificationModel.create({
+            type: 'driver', infoType: 'Geofence', parentId: evt.parentId,
+            schoolId: trip.schoolId, VanId: trip.vanId, title, message: body,
+            actionType, status: 'sent', date: now,
           });
-          if (!parent?.fcmToken || parent.notificationToggle !== true) continue;
+        }
+        continue;
+      }
+
+      // School event — parents of kids currently on the trip
+      for (const kidEntry of pendingKids) {
+        const kid = await repos.KidModel.findById(kidEntry.kidId);
+        if (!kid?.parentId) continue;
+        const parent = await repos.parentModel.findOne({ _id: kid.parentId, isDelete: false });
+        if (parent?.fcmToken && parent.notificationToggle === true) {
           try {
             await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
               notification: { title, body },
@@ -1503,89 +1891,185 @@ async generateGraphData(
           } catch (e) {
             console.error('School geofence FCM error:', e.message);
           }
-          // Save notification per parent
-          await this.databaseService.repositories.notificationModel.create({
-            type: 'driver',
-            infoType: 'Geofence',
-            parentId: kid.parentId.toString(),
-            schoolId: trip.schoolId,
-            VanId: trip.vanId,
-            title,
-            message: body,
-            actionType,
-            status: 'sent',
-            date: new Date(),
+        }
+        await repos.notificationModel.create({
+          type: 'driver', infoType: 'Geofence', parentId: kid.parentId.toString(),
+          schoolId: trip.schoolId, VanId: trip.vanId, title, message: body,
+          actionType, status: 'sent', date: now,
+        });
+      }
+    }
+
+    // ── 4. ETA (throttled) + threshold pushes ────────────────────────────
+    let eta: { kidId: string; minutes: number; etaTime: string; distanceMeters: number }[] = [];
+    const cached = etaCache.get(tripId);
+    if (cached && now.getTime() - cached.at < ETA_REFRESH_MS) {
+      eta = cached.eta.filter(e => waiting.has(e.kidId));
+    } else if (stops.size) {
+      const ids = [...stops.keys()].slice(0, 25); // Distance Matrix limit
+      const results = await this.etaService.calculateETA(
+        lat, lng,
+        ids.map(id => ({ name: id, lat: stops.get(id).lat, lng: stops.get(id).lng })),
+      );
+      eta = results
+        .map((r, i) => ({
+          kidId: ids[i],
+          minutes: Math.max(1, Math.round(r.durationSeconds / 60)),
+          etaTime: r.etaTime,
+          distanceMeters: r.distanceMeters,
+          ok: r.durationSeconds > 0,
+        }))
+        .filter(r => r.ok)
+        .map(({ ok, ...r }) => r);
+      etaCache.set(tripId, { at: now.getTime(), eta });
+
+      const sent = [...(trip.etaAlertsSent || [])];
+      for (const e of eta) {
+        const push = etaPushToSend(e.kidId, e.minutes, sent);
+        if (!push) continue;
+        sent.push(...push.markSent.filter(k => !sent.includes(k)));
+        const stop = stops.get(e.kidId);
+        const parent = stop?.parent;
+        if (!parent?.fcmToken || parent.notificationToggle !== true) continue;
+        const name = stop.kid?.fullname || 'your child';
+        const title = push.threshold <= 3 ? 'Van almost there' : 'Van on the way';
+        const body = trip.type === 'pick'
+          ? `Please get ${name} ready — the van is about ${e.minutes} min away (${e.etaTime}).`
+          : `The van with ${name} is about ${e.minutes} min from home (${e.etaTime}).`;
+        try {
+          await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+            notification: { title, body },
+            data: {
+              tripId, type: 'ETA_UPDATE', kidId: e.kidId,
+              etaMinutes: String(e.minutes), etaTime: e.etaTime,
+              driverLat: String(lat), driverLng: String(lng),
+            },
           });
+        } catch (err) {
+          console.error('ETA FCM error:', err.message);
         }
       }
+      trip.etaAlertsSent = sent;
+    }
 
-      // Save notification for home zone events
-      if (evt.zoneType === 'home' && evt.parentId) {
-        await this.databaseService.repositories.notificationModel.create({
-          type: 'driver',
-          infoType: 'Geofence',
-          parentId: evt.parentId,
-          schoolId: trip.schoolId,
-          VanId: trip.vanId,
-          title,
-          message: body,
-          actionType,
-          status: 'sent',
-          date: new Date(),
-        });
+    await trip.save();
+
+    // ── Overspeed alert to school (max once per 5 min per trip) ──────────
+    if (overspeed) {
+      const lastAlert = trip.lastOverspeedAlertAt ? new Date(trip.lastOverspeedAlertAt).getTime() : 0;
+      if (now.getTime() - lastAlert > 5 * 60_000) {
+        await repos.TripModel.updateOne({ _id: trip._id }, { $set: { lastOverspeedAlertAt: now } });
+        try {
+          const driver: any = await repos.driverModel.findById(driverId, { fullname: 1 }).lean();
+          const driverName = driver?.fullname || 'Driver';
+          const message = `${driverName}${van.carNumber ? ` (van ${van.carNumber})` : ''} was driving at ` +
+            `${overspeed.speedKmh} km/h (limit ${overspeed.limitKmh}). https://maps.google.com/?q=${lat},${lng}`;
+          const alert = await repos.notificationModel.create({
+            type: 'overspeed', alertType: 'OVERSPEED', recipientType: 'ADMIN', infoType: 'Warning',
+            driverId, schoolId: van.schoolId, VanId: van._id.toString(),
+            title: 'Overspeeding', message, status: 'sent', date: now,
+          });
+          this.eventsGateway.emitToSchool(van.schoolId, 'overspeedAlert', {
+            alertId: alert._id.toString(), tripId, driverId, driverName,
+            vanId: van._id.toString(), speedKmh: overspeed.speedKmh,
+            limitKmh: overspeed.limitKmh, location: { lat, lng }, at: now.toISOString(),
+          });
+        } catch (e) {
+          console.error('[overspeed] alert failed:', e);
+        }
       }
     }
 
-    // 7. Calculate ETA
-    const etaData = await this.getETA(tripId, lat, lng);
-
-    // 8. ETA FCM to pending kids parents
-    for (const kidEntry of pendingKids) {
-      const kid = await this.databaseService.repositories.KidModel.findById(kidEntry.kidId);
-      if (!kid?.parentId) continue;
-      const parent = await this.databaseService.repositories.parentModel.findOne({
-        _id: kid.parentId, isDelete: false,
-      });
-      if (!parent?.fcmToken || parent.notificationToggle !== true) continue;
-      const firstEta = etaData.eta[0];
-      if (!firstEta || firstEta.durationSeconds === 0) continue;
-      const etaMins = Math.round(firstEta.durationSeconds / 60);
-      try {
-        await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
-          notification: {
-            title: 'Van is on the way',
-            body: etaMins <= 1
-              ? 'Van is arriving now!'
-              : 'Van arriving in ' + etaMins + ' mins (' + firstEta.etaTime + ')',
-          },
-          data: {
-            tripId,
-            type: 'ETA_UPDATE',
-            etaMinutes: String(etaMins),
-            etaTime: firstEta.etaTime,
-            driverLat: String(lat),
-            driverLng: String(lng),
-          },
-        });
-      } catch (e) {
-        console.error('ETA FCM error:', e.message);
-      }
-    }
+    // ── 5. Live ETA for parents watching the map ─────────────────────────
+    this.eventsGateway.emitToRoom(tripId, 'etaUpdate', {
+      tripId,
+      at: now.toISOString(),
+      eta: eta.map(e => ({ kidId: e.kidId, minutes: e.minutes, etaTime: e.etaTime })),
+    });
 
     return {
-      message: 'Location updated, geofence checked, ETA broadcast',
+      message: 'Location updated',
       location: { lat, lng },
       geofenceEvents: events.map(e => ({
-        zone: e.zoneName,
-        type: e.zoneType,
-        event: e.event,
-        distanceMeters: e.distanceMeters,
+        zone: e.zoneName, type: e.zoneType, event: e.event, distanceMeters: e.distanceMeters,
       })),
-      eta: etaData.eta,
+      eta,
+      ...(overspeed ? { overspeed } : {}),
     };
   }
 
+  // ─── Driver stats ───────────────────────────────────────────────────────
 
+  /** Last [days] days of ended trips for the driver's van. */
+  async getDriverStats(driverId: string, days = 7) {
+    const span = Math.min(Math.max(Math.floor(days) || 7, 1), 90);
+    const repos = this.databaseService.repositories;
+    const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }).lean();
+    if (!van) throw new BadRequestException('Van not assigned to this driver');
+
+    const since = new Date(Date.now() - span * 24 * 60 * 60 * 1000);
+    const trips: any[] = await repos.TripModel.find(
+      { vanId: van._id.toString(), status: 'end', createdAt: { $gte: since } },
+      { locations: 0 },
+    ).lean();
+
+    const routeIds = [...new Set(trips.map(t => t.routeId).filter(id => Types.ObjectId.isValid(id)))];
+    const routes: any[] = await repos.routeModel.find({ _id: { $in: routeIds } }, { startTime: 1 }).lean();
+    const startByRoute = new Map(routes.map(r => [r._id.toString(), r.startTime]));
+
+    let distance = 0;
+    let durationMin = 0;
+    let overspeedCount = 0;
+    let maxSpeed = 0;
+    let onTime = 0;
+    let timed = 0;
+    let kidsDropped = 0;
+    for (const t of trips) {
+      distance += t.distanceMeters || 0;
+      overspeedCount += (t.overspeedEvents || []).length;
+      maxSpeed = Math.max(maxSpeed, t.maxSpeedKmh || 0);
+      kidsDropped += (t.kids || []).filter((k: any) => k.status === 'dropped').length;
+      const start = t.tripStart?.startTime ? new Date(t.tripStart.startTime) : null;
+      const end = t.tripEnd?.endTime ? new Date(t.tripEnd.endTime) : null;
+      if (start && end && end > start) durationMin += (end.getTime() - start.getTime()) / 60000;
+
+      // On time = started within 10 minutes of the route's scheduled start.
+      const scheduled = startByRoute.get(t.routeId);
+      if (start && scheduled) {
+        // route.startTime is stored as a Date; only its time of day matters.
+        const local = moment(start).tz(TZ);
+        const schedTime = moment(new Date(scheduled)).tz(TZ);
+        const sched = local.clone().set({
+          hour: schedTime.hour(), minute: schedTime.minute(), second: 0, millisecond: 0,
+        });
+        if (sched.isValid()) {
+          timed++;
+          if (local.diff(sched, 'minutes') <= 10) onTime++;
+        }
+      }
+    }
+
+    // Simple 0–100 score: start at 100, minus 5 per overspeed event, minus
+    // up to 20 for late starts.
+    const latePenalty = timed ? Math.round(((timed - onTime) / timed) * 20) : 0;
+    const safetyScore = Math.max(0, 100 - overspeedCount * 5 - latePenalty);
+
+    return {
+      success: true,
+      data: {
+        days: span,
+        trips: trips.length,
+        distanceKm: Math.round(distance / 100) / 10,
+        drivingMinutes: Math.round(durationMin),
+        kidsDropped,
+        overspeedCount,
+        maxSpeedKmh: maxSpeed,
+        onTimePercent: timed ? Math.round((onTime / timed) * 100) : null,
+        safetyScore,
+        speedLimitKmh: overspeedLimitKmh(),
+      },
+    };
+  }
 
   // ─── Digital Attendance ─────────────────────────────────────────────────
 

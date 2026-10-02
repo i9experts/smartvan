@@ -13,5 +13,7 @@ import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
     WhatsappModule,
   ],
   providers: [EventsGateway],
+  // Exported so services (trips, alerts) can push real-time events.
+  exports: [EventsGateway],
 })
 export class EventsModule {}

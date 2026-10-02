@@ -1,16 +1,86 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Body, Req, Query, UseGuards, UnauthorizedException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Req, Query, Param, Headers, UseGuards, UnauthorizedException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Types } from 'mongoose';
 import { FeesService } from './fees.service';
 import { DatabaseService } from 'src/database/databaseservice';
+import { OnlinePaymentsService } from './online-payments.service';
 
 @Controller('fees')
 export class FeesController {
   constructor(
     private readonly feesService: FeesService,
     private readonly databaseService: DatabaseService,
+    private readonly onlinePayments: OnlinePaymentsService,
   ) {}
+
+  // ─── Online payments (parent) ───────────────────────────────────────
+
+  private requireParent(req: any) {
+    if (req.user?.userType !== 'parent') {
+      throw new UnauthorizedException('Only parents can pay online');
+    }
+  }
+
+  /** Which online methods are available (mode: off | mock | live). */
+  @UseGuards(AuthGuard('jwt'))
+  @Get('payment-methods')
+  async getPaymentMethods() {
+    return this.onlinePayments.getMethods();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('pay-online')
+  async payOnline(@Body() body: { paymentId: string; method: string }, @Req() req: any) {
+    this.requireParent(req);
+    return this.onlinePayments.startCheckout(req.user.userId, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('pay-online/:checkoutId')
+  async getCheckout(@Param('checkoutId') checkoutId: string, @Req() req: any) {
+    this.requireParent(req);
+    return this.onlinePayments.getCheckout(req.user.userId, checkoutId);
+  }
+
+  /** PAYMENTS_MODE=mock only. Body { success?: boolean } (default true). */
+  @UseGuards(AuthGuard('jwt'))
+  @Post('pay-online/:checkoutId/mock-confirm')
+  async mockConfirm(
+    @Param('checkoutId') checkoutId: string,
+    @Body() body: { success?: boolean },
+    @Req() req: any,
+  ) {
+    this.requireParent(req);
+    return this.onlinePayments.mockConfirm(req.user.userId, checkoutId, body?.success !== false);
+  }
+
+  /** Payment gateway callback (no JWT — verified by the provider's signature). */
+  @Post('webhook/:provider')
+  async paymentWebhook(
+    @Param('provider') provider: string,
+    @Headers() headers: Record<string, any>,
+    @Body() body: any,
+  ) {
+    return this.onlinePayments.handleWebhook(provider, headers, body);
+  }
+
+  /** Receipt for a paid fee — parent, driver of the van, or school admin. */
+  @UseGuards(AuthGuard('jwt'))
+  @Get('receipt/:paymentId')
+  async getReceipt(@Param('paymentId') paymentId: string, @Req() req: any) {
+    return this.onlinePayments.getReceipt(req.user, paymentId);
+  }
+
+  /** Driver's monthly collection summary for their van. */
+  @UseGuards(AuthGuard('jwt'))
+  @Get('driver-summary')
+  async getDriverSummary(@Query('month') month: string, @Req() req: any) {
+    if (req.user?.userType !== 'driver') {
+      throw new UnauthorizedException('Only drivers can access this API');
+    }
+    return this.onlinePayments.getDriverSummary(req.user.userId, month);
+  }
 
   /**
    * SECURITY: resolves the school a fees request is actually scoped to,
