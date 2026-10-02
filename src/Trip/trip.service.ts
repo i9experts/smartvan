@@ -21,6 +21,9 @@ import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { Kid } from 'src/Kid/kid.schema';
 import { EventsGateway } from 'src/events/events.gateway';
 import { findUndroppedKidIds, requiresDropConfirmation } from './trip-safety.util';
+import { decideScanAction } from './scan-action.util';
+import { ScanStudentDto } from './dto/scan-student.dto';
+import { parseQrPayload } from 'src/Kid/kid-qr.util';
 @Injectable()
 export class TripService {
   constructor(
@@ -30,6 +33,68 @@ export class TripService {
    private readonly geofenceService: GeofenceService,
    private readonly eventsGateway: EventsGateway,
   ) {} 
+
+// ─── QR scan pickup / drop ──────────────────────────────────────────────
+
+/**
+ * Driver scans a student's QR card. Decides pick vs drop from the kid's
+ * state on this trip, then delegates to the existing pick/drop methods
+ * (which do all the driver/van/trip ownership checks and notifications).
+ */
+async scanStudent(driverId: string, dto: ScanStudentDto) {
+  const fail = (code: string, message: string) =>
+    new BadRequestException({ success: false, code, message });
+
+  const token = parseQrPayload(dto?.qrPayload);
+  if (!token) throw fail('INVALID_QR', 'This is not a SmartVan student card.');
+
+  if (!dto.tripId || !Types.ObjectId.isValid(dto.tripId)) {
+    throw fail('TRIP_NOT_FOUND', 'Trip not found');
+  }
+  const repos = this.databaseService.repositories;
+  const trip: any = await repos.TripModel.findById(dto.tripId).lean();
+  if (!trip) throw fail('TRIP_NOT_FOUND', 'Trip not found');
+  if (trip.status !== 'ongoing') throw fail('TRIP_NOT_ONGOING', 'This trip is not in progress.');
+
+  const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }).lean();
+  if (!van || trip.vanId !== van._id.toString()) {
+    throw fail('TRIP_NOT_YOURS', 'This trip does not belong to your van.');
+  }
+
+  const kid: any = await repos.KidModel.findOne({ qrToken: token }, { fullname: 1, VanId: 1, status: 1 }).lean();
+  if (!kid) throw fail('INVALID_QR', 'Card not recognised. It may have been replaced — ask the school for a new one.');
+  const kidId = kid._id.toString();
+
+  // Kid must belong to this van / route.
+  let onTrip = kid.VanId === trip.vanId;
+  if (!onTrip && trip.routeId) {
+    const route: any = await repos.routeModel.findById(trip.routeId, { kidLocations: 1 }).lean();
+    onTrip = (route?.kidLocations || []).some((kl: any) => kl?.kidId?.toString() === kidId);
+  }
+  if (!onTrip) throw fail('KID_NOT_ON_TRIP', `${kid.fullname || 'This student'} is not a passenger on this van.`);
+
+  const action = decideScanAction(trip.type, kidId, trip.kids);
+  const base = { kidId, fullname: kid.fullname, tripId: dto.tripId };
+
+  switch (action) {
+    case 'alreadyPicked':
+      throw fail('ALREADY_PICKED', `${kid.fullname || 'This student'} is already picked up. Students are dropped at school when you end the trip.`);
+    case 'alreadyDropped':
+      throw fail('ALREADY_DROPPED', `${kid.fullname || 'This student'} has already been dropped on this trip.`);
+    case 'pick':
+      await this.pickStudent(driverId, { tripId: dto.tripId, kidId, lat: dto.lat, long: dto.lng });
+      return { success: true, message: `${kid.fullname} picked up`, data: { action: 'picked', ...base } };
+    case 'pickFromSchool':
+      await this.pickStudentsFromSchool(driverId, { tripId: dto.tripId, kidId });
+      return { success: true, message: `${kid.fullname} picked from school`, data: { action: 'picked', ...base } };
+    case 'drop':
+      if (typeof dto.lat !== 'number' || typeof dto.lng !== 'number') {
+        throw fail('LOCATION_REQUIRED', 'Your GPS location is required to record a drop.');
+      }
+      await this.dropStudentForHome(driverId, { tripId: dto.tripId, kidId, lat: dto.lat, long: dto.lng });
+      return { success: true, message: `${kid.fullname} dropped`, data: { action: 'dropped', ...base } };
+  }
+}
 
 // ─── Child-left-behind safety check ─────────────────────────────────────
 

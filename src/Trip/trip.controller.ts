@@ -7,6 +7,7 @@ import { EndTripDto } from './dto/tripend.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { getLocationDto } from './dto/getLocations';
+import { ScanStudentDto } from './dto/scan-student.dto';
 import { DatabaseService } from 'src/database/databaseservice';
 
 @Controller('trips')
@@ -32,6 +33,13 @@ export class TripController {
   @Post('pickStudent')
   async pickStudent(@Body() pickStudentDto: PickStudentDto, @Req() req: any) {
     return this.tripService.pickStudent(req.user.userId, pickStudentDto);
+  }
+
+  /** Driver scans a student's QR card → pick or drop. */
+  @UseGuards(AuthGuard('jwt'))
+  @Post('scanStudent')
+  async scanStudent(@Body() dto: ScanStudentDto, @Req() req: any) {
+    return this.tripService.scanStudent(req.user.userId, dto);
   }
 
   @UseGuards(AuthGuard('jwt'))

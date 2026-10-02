@@ -1,13 +1,41 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Get,  Req, Query } from '@nestjs/common';
+import { Body, Controller, Post, Get,  Req, Query, Param } from '@nestjs/common';
 import { KidService } from './kid.service'
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { CreateKidDto } from './dto/CreateKid.dto';
+import { KidQrService } from './kid-qr.service';
 
 @Controller('kid')
 export class KidController {
-  constructor(private readonly KidService: KidService) {}
+  constructor(
+    private readonly KidService: KidService,
+    private readonly kidQrService: KidQrService,
+  ) {}
+
+  // ─── Student QR cards (admin / school staff) ─────────────────────────
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('qr/cards')
+  async getQrCards(
+    @Req() req: any,
+    @Query('vanId') vanId?: string,
+    @Query('schoolId') schoolId?: string,
+  ) {
+    return this.kidQrService.getCards(req.user, { vanId, schoolId });
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get(':id/qr')
+  async getKidQr(@Param('id') id: string, @Req() req: any) {
+    return this.kidQrService.getQr(id, req.user);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post(':id/qr/regenerate')
+  async regenerateKidQr(@Param('id') id: string, @Req() req: any) {
+    return this.kidQrService.regenerateQr(id, req.user);
+  }
 
   @UseGuards(AuthGuard('jwt'))
   @Post('addKid')

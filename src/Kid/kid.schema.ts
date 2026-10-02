@@ -52,6 +52,11 @@ homeLat: number;
 
 @Prop({ required: false })
 homeLng: number;
+
+// QR card token (see KidQrService). select:false so it is never returned by
+// regular kid APIs — only the school's card-printing endpoints expose it.
+@Prop({ required: false, unique: true, sparse: true, select: false })
+qrToken?: string;
 }
 
 
