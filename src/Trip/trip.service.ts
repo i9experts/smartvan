@@ -24,6 +24,13 @@ import { findUndroppedKidIds, requiresDropConfirmation } from './trip-safety.uti
 import { decideScanAction } from './scan-action.util';
 import { ScanStudentDto } from './dto/scan-student.dto';
 import { parseQrPayload } from 'src/Kid/kid-qr.util';
+import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
+import {
+  checklistDate,
+  checklistItemDefs,
+  isChecklistRequired,
+  validateChecklistItems,
+} from './pretrip-checklist.util';
 @Injectable()
 export class TripService {
   constructor(
@@ -33,6 +40,108 @@ export class TripService {
    private readonly geofenceService: GeofenceService,
    private readonly eventsGateway: EventsGateway,
   ) {} 
+
+// ─── Pre-trip vehicle checklist ─────────────────────────────────────────
+
+private async driverAndVan(driverId: string) {
+  const driverObjectId = new Types.ObjectId(driverId);
+  const driver: any = await this.databaseService.repositories.driverModel.findById(driverObjectId).lean();
+  if (!driver) throw new UnauthorizedException('Driver not found');
+  const van: any = await this.databaseService.repositories.VanModel.findOne({ driverId: driverObjectId }).lean();
+  if (!van) throw new BadRequestException('Van not assigned to this driver');
+  return { driver, van };
+}
+
+getChecklistItems() {
+  return {
+    success: true,
+    data: checklistItemDefs(),
+    required: isChecklistRequired(),
+  };
+}
+
+async getTodayChecklist(driverId: string) {
+  const { van } = await this.driverAndVan(driverId);
+  const doc = await this.databaseService.repositories.pretripChecklistModel
+    .findOne({ vanId: van._id.toString(), date: checklistDate(TZ) })
+    .lean();
+  return { success: true, data: doc || null, required: isChecklistRequired() };
+}
+
+async submitChecklist(driverId: string, dto: SubmitChecklistDto) {
+  const { driver, van } = await this.driverAndVan(driverId);
+
+  const error = validateChecklistItems(dto?.items, checklistItemDefs());
+  if (error) {
+    throw new BadRequestException({ success: false, code: 'INVALID_CHECKLIST', message: error });
+  }
+
+  const items = dto.items.map((i) => ({
+    key: i.key,
+    ok: i.ok,
+    ...(i.note && i.note.trim() ? { note: i.note.trim().slice(0, 500) } : {}),
+  }));
+  const failed = items.filter((i) => !i.ok);
+  const date = checklistDate(TZ);
+
+  const doc = await this.databaseService.repositories.pretripChecklistModel.findOneAndUpdate(
+    { vanId: van._id.toString(), date },
+    {
+      $set: {
+        driverId: driver._id.toString(),
+        schoolId: van.schoolId,
+        routeId: dto.routeId,
+        items,
+        photoUrl: dto.photoUrl,
+        allOk: failed.length === 0,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  ).lean();
+
+  if (failed.length) {
+    const labels = new Map(checklistItemDefs().map((d) => [d.key, d.label]));
+    const issues = failed.map((f) => (labels.get(f.key) || f.key) + (f.note ? ` (${f.note})` : ''));
+    const driverName = driver.fullname || 'Driver';
+    const message = `${driverName} reported van issues in the pre-trip check` +
+      `${van.carNumber ? ` (van ${van.carNumber})` : ''}: ${issues.join('; ')}`;
+    try {
+      const alert = await this.databaseService.repositories.notificationModel.create({
+        type: 'pretrip_issue',
+        alertType: 'PRETRIP_CHECK_FAILED',
+        recipientType: 'ADMIN',
+        infoType: 'Warning',
+        driverId: driver._id.toString(),
+        schoolId: van.schoolId,
+        VanId: van._id.toString(),
+        title: 'Van check issues',
+        message,
+        status: 'sent',
+        date: new Date(),
+      });
+      this.eventsGateway.emitToSchool(van.schoolId, 'pretripChecklistAlert', {
+        alertId: alert._id.toString(),
+        checklistId: (doc as any)?._id?.toString(),
+        driverId: driver._id.toString(),
+        driverName,
+        vanId: van._id.toString(),
+        failedItems: failed,
+        photoUrl: dto.photoUrl,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error('[checklist] admin alert failed:', e);
+    }
+  }
+
+  return {
+    success: true,
+    message: failed.length
+      ? 'Checklist saved. The school has been told about the issues.'
+      : 'Checklist saved',
+    data: doc,
+  };
+}
 
 // ─── QR scan pickup / drop ──────────────────────────────────────────────
 
@@ -838,6 +947,21 @@ async startTrip(driverId: string, createTripDto: CreateTripDto) {
 
   if (!route.startTime) {
     throw new BadRequestException('Route start time not defined');
+  }
+
+  // 🛡️ Pre-trip vehicle check (opt-in via REQUIRE_PRETRIP_CHECKLIST=true)
+  if (isChecklistRequired()) {
+    const done = await this.databaseService.repositories.pretripChecklistModel.exists({
+      vanId: van._id.toString(),
+      date: checklistDate(TZ),
+    });
+    if (!done) {
+      throw new ConflictException({
+        success: false,
+        code: 'CHECKLIST_REQUIRED',
+        message: 'Please complete today\'s vehicle checklist before starting a trip.',
+      });
+    }
   }
 
   // 4️⃣ ⏰ Time validation (1 hour window)
