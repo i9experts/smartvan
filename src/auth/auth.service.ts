@@ -131,8 +131,6 @@ async loginUser(loginData: any) {
   try {
     const { userType, email, loginId, password, fcmToken} = loginData;
 
-    console.log("llllllllllll", loginData)
-
     const userModel = await this.getUserModel(userType);
 
     // Accept login via email, phone number, or CNIC (NIC) — drivers in
@@ -409,15 +407,6 @@ async socialLogin(
   fcmToken: string,
 ) {
   try {
-    console.log("authProvider:", authProvider);
-    console.log("token:", token);
-    console.log("userType:", userType);
-    console.log("userName:", userName);
-    console.log("email:", email);
-    console.log("socialId:", socialId);
-    console.log("image:", image);
-    console.log("fcmToken:", fcmToken);
-
     if (!userType || !socialId || !email) {
       throw new UnauthorizedException(
         'userType, email and socialId must be given',

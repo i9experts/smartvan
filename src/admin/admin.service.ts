@@ -401,11 +401,7 @@ async resetPassword(email: string, otp: string, newPassword: string) {
       throw new UnauthorizedException('Admin not found');
     }
 
-    console.log ("wali", email, otp, newPassword)
-
-    
    if (admin.otp !== otp.toString()) {
-  console.log("DB OTP:", admin.otp, " Provided OTP:", otp); // Debugging
   throw new UnauthorizedException('Invalid OTP');
 }
 

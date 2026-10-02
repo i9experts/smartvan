@@ -48,7 +48,6 @@ afterInit(server: Server) {
       socket.handshake.auth?.token ||
       socket.handshake.headers["authorization"] ||
       socket.handshake.query?.token;
-    console.log("Raw token:", token);
 
     if (!token) {
       return next(new Error("No token provided"));
