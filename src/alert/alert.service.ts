@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadGatewayException, Injectable, UnauthorizedException, BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, Injectable, UnauthorizedException, BadRequestException, NotFoundException, HttpException, HttpStatus } from '@nestjs/common';
 import { DatabaseService } from "src/database/databaseservice";
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service'; 
 
@@ -8,6 +8,11 @@ import mongoose from 'mongoose';
 
 import { AddAlertDto } from './dto/addAlertdto';
 import { info } from 'console';
+import { EventsGateway } from 'src/events/events.gateway';
+import { DriverSosDto } from './dto/driver-sos.dto';
+import { Cooldown } from './sos-rate-limit';
+
+const sosCooldown = new Cooldown(30_000);
 
 
 
@@ -18,7 +23,8 @@ export class alertService {
   constructor(
    
     private databaseService: DatabaseService,
-    private firebaseAdminService: FirebaseAdminService
+    private firebaseAdminService: FirebaseAdminService,
+    private readonly eventsGateway: EventsGateway,
     
 
 
@@ -725,6 +731,116 @@ async sendAlertByDriver(driverId: string, message?: string, audioUrl?: string) {
   return {
     message: 'Alert sent to school admin',
     data: notification,
+  };
+}
+
+// ─── Driver SOS ──────────────────────────────────────────────────────
+//
+// Emergency from the driver (accident, breakdown, medical, threat).
+// Stored as an ADMIN alert, pushed to the parents of kids on the trip,
+// and broadcast on the trip room + the school's alert room.
+async sendSosByDriver(driverId: string, dto: DriverSosDto) {
+  if (typeof dto?.lat !== 'number' || typeof dto?.lng !== 'number' ||
+      Math.abs(dto.lat) > 90 || Math.abs(dto.lng) > 180) {
+    throw new BadRequestException({ success: false, code: 'INVALID_LOCATION', message: 'Valid lat and lng are required' });
+  }
+
+  const wait = sosCooldown.hit(driverId);
+  if (wait > 0) {
+    throw new HttpException(
+      { success: false, code: 'SOS_RATE_LIMITED', message: `SOS already sent. You can send again in ${wait}s.` },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  const repos = this.databaseService.repositories;
+  const driverObjectId = new Types.ObjectId(driverId);
+  const driver: any = await repos.driverModel.findById(driverObjectId).lean();
+  if (!driver) throw new NotFoundException('Driver not found');
+  const van: any = await repos.VanModel.findOne({ driverId: driverObjectId }).lean();
+
+  // Explicit trip if given (must be this driver's van), else the van's
+  // currently ongoing trip, if any.
+  let trip: any = null;
+  if (dto.tripId && Types.ObjectId.isValid(dto.tripId)) {
+    trip = await repos.TripModel.findById(dto.tripId).lean();
+    if (trip && van && trip.vanId !== van._id.toString()) trip = null;
+  }
+  if (!trip && van) {
+    trip = await repos.TripModel.findOne({ vanId: van._id.toString(), status: 'ongoing' })
+      .sort({ createdAt: -1 })
+      .lean();
+  }
+
+  const schoolId = van?.schoolId || driver.schoolId;
+  const driverName = driver.fullname || 'Driver';
+  const vanNumber = van?.carNumber || '';
+  const text = (dto.message || '').trim() ||
+    `Emergency SOS from ${driverName}${vanNumber ? ` (van ${vanNumber})` : ''}`;
+  const createdAt = new Date();
+
+  const alert = await repos.notificationModel.create({
+    type: 'sos',
+    alertType: 'DRIVER_SOS',
+    recipientType: 'ADMIN',
+    infoType: 'Emergency',
+    driverId: driver._id.toString(),
+    schoolId,
+    VanId: van?._id?.toString(),
+    title: '🚨 Driver SOS',
+    message: `${text} — location: https://maps.google.com/?q=${dto.lat},${dto.lng}`,
+    status: 'sent',
+    date: createdAt,
+  });
+
+  const payload = {
+    source: 'driver',
+    alertId: alert._id.toString(),
+    tripId: trip?._id?.toString() ?? null,
+    driverId: driver._id.toString(),
+    driverName,
+    vanId: van?._id?.toString() ?? null,
+    vanNumber,
+    location: { lat: dto.lat, lng: dto.lng },
+    message: text,
+    at: createdAt.toISOString(),
+  };
+  if (trip) this.eventsGateway.emitToRoom(trip._id.toString(), 'sosAlert', payload);
+  this.eventsGateway.emitToSchool(schoolId, 'sosAlert', payload);
+
+  // Push to parents of every kid on this trip / route (best-effort,
+  // ignores the parent's notification toggle — this is a safety alert).
+  let parentsNotified = 0;
+  if (trip) {
+    const kidIds = new Set<string>((trip.kids || []).map((k: any) => k.kidId?.toString()).filter(Boolean));
+    const route: any = trip.routeId ? await repos.routeModel.findById(trip.routeId).lean() : null;
+    for (const kl of route?.kidLocations || []) {
+      if (kl?.kidId) kidIds.add(kl.kidId.toString());
+    }
+    const kids: any[] = kidIds.size
+      ? await repos.KidModel.find(
+          { _id: { $in: [...kidIds].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id)) } },
+          { parentId: 1, fullname: 1 },
+        ).lean()
+      : [];
+    const parentIds = [...new Set(kids.filter((k) => k.parentId).map((k) => k.parentId.toString()))];
+    const parents: any[] = parentIds.length
+      ? await repos.parentModel.find({ _id: { $in: parentIds }, isDelete: false }, { fcmToken: 1 }).lean()
+      : [];
+    const body = `Your child's van driver raised an emergency alert. The school has been informed.`;
+    await Promise.all(parents.filter((p) => p.fcmToken).map(async (p) => {
+      const r = await this.firebaseAdminService.sendToDevice(p.fcmToken, {
+        notification: { title: '🚨 Van emergency', body },
+        data: { type: 'driver_sos', tripId: trip._id.toString(), alertId: alert._id.toString() },
+      });
+      if (r?.success) parentsNotified++;
+    }));
+  }
+
+  return {
+    success: true,
+    message: 'SOS sent to school admin',
+    data: { alertId: alert._id.toString(), tripId: payload.tripId, parentsNotified },
   };
 }
 
