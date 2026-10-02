@@ -80,6 +80,26 @@ export class Trip {
   // Geofencing — tracks which zones the van is currently inside
   @Prop({ type: [String], default: [] })
   insideZoneIds: string[];
+
+  // ETA pushes already sent this trip, as "kidId:10" / "kidId:3"
+  @Prop({ type: [String], default: [] })
+  etaAlertsSent: string[];
+
+  // Distance driven, summed from GPS updates (metres)
+  @Prop({ type: Number, default: 0 })
+  distanceMeters: number;
+
+  @Prop({ type: Number, default: 0 })
+  maxSpeedKmh: number;
+
+  @Prop({
+    type: [{ speedKmh: Number, lat: Number, long: Number, time: Date }],
+    default: [],
+  })
+  overspeedEvents: { speedKmh: number; lat: number; long: number; time: Date }[];
+
+  @Prop({ type: Date })
+  lastOverspeedAlertAt?: Date;
 }
 
 export const TripSchema = SchemaFactory.createForClass(Trip);

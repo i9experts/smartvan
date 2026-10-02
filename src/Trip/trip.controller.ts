@@ -153,15 +153,23 @@ export class TripController {
   @Post('updateLocation/:tripId')
   async updateLocation(
     @Param('tripId') tripId: string,
-    @Body() body: { lat: number; lng: number },
+    @Body() body: { lat: number; lng: number; speed?: number },
     @Req() req: any,
   ) {
     return this.tripService.updateLocationAndBroadcastETA(
       req.user.userId,
       tripId,
-      body.lat,
-      body.lng,
+      Number(body.lat),
+      Number(body.lng),
+      body.speed,
     );
+  }
+
+  /** Driver's own stats for the last ?days= (default 7, max 90). */
+  @UseGuards(AuthGuard('jwt'))
+  @Get('driver-stats')
+  async getDriverStats(@Req() req: any, @Query('days') days?: string) {
+    return this.tripService.getDriverStats(req.user.userId, Number(days) || 7);
   }
   // ─── Digital Attendance ─────────────────────────────────────────────────
 
