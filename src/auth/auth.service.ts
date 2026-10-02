@@ -144,6 +144,9 @@ async loginUser(loginData: any) {
     // particular often can't manage email/OTP, so phone/CNIC + a
     // password set by the admin is the practical login path for them.
     const identifier = (email || loginId || '').toString().trim();
+    if (!identifier || !password) {
+      throw new UnauthorizedException('Please enter your login ID and password.');
+    }
 
     const user = await userModel.findOne({
       $or: [
@@ -153,10 +156,9 @@ async loginUser(loginData: any) {
       ],
     });
    if (!user) {
-  throw new UnauthorizedException({
-    message: 'logiin failed',
-    statusCode: 401
-  });
+  throw new UnauthorizedException(
+    'No account found with this phone number, email or CNIC. Please check it and try again.',
+  );
 }
 
 
@@ -168,7 +170,7 @@ async loginUser(loginData: any) {
 
     const isPasswordMatch = await bcrypt.compare(password, user.password);
     if (!isPasswordMatch) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Incorrect password. Please try again.');
     }
 
     if (!user.isVerified) {
