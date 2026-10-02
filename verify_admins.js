@@ -9,7 +9,7 @@ const { MongoClient } = require('mongodb');
 async function run() {
   const client = new MongoClient(process.env.MONGODB_URI);
   await client.connect();
-  const db = client.db(); // uses the db name embedded in the URI
+  const db = client.db('smartvan');
   console.log('Connected to database:', db.databaseName);
 
   const admins = await db.collection('admins').find({}, { projection: { email: 1, role: 1, password: 1 } }).toArray();
