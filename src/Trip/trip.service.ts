@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, UnauthorizedException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { PickStudentDto } from './dto/pick-student.dto';
 import mongoose from 'mongoose';
@@ -19,6 +19,8 @@ import { EndTripDto } from './dto/tripend.dto';
 import { getLocationDto } from './dto/getLocations';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { Kid } from 'src/Kid/kid.schema';
+import { EventsGateway } from 'src/events/events.gateway';
+import { findUndroppedKidIds, requiresDropConfirmation } from './trip-safety.util';
 @Injectable()
 export class TripService {
   constructor(
@@ -26,7 +28,132 @@ export class TripService {
    private firebaseAdminService: FirebaseAdminService,
    private readonly etaService: EtaService,
    private readonly geofenceService: GeofenceService,
+   private readonly eventsGateway: EventsGateway,
   ) {} 
+
+// ─── Child-left-behind safety check ─────────────────────────────────────
+
+/**
+ * For drop trips: refuses to end the trip while any kid is still marked as
+ * picked (i.e. possibly still in the van), unless the driver explicitly
+ * forces it with a note. Returns the undropped kids when forced.
+ */
+private async checkKidsDroppedBeforeEnd(
+  trip: any,
+  dto: EndTripDto,
+): Promise<{ kidId: string; fullname: string }[]> {
+  if (!requiresDropConfirmation(trip.type)) return [];
+
+  const undroppedIds = findUndroppedKidIds(trip.kids);
+  if (!undroppedIds.length) return [];
+
+  const docs = await this.databaseService.repositories.KidModel.find(
+    { _id: { $in: undroppedIds.map((id) => new Types.ObjectId(id)) } },
+    { fullname: 1 },
+  ).lean();
+  const nameById = new Map(docs.map((d: any) => [d._id.toString(), d.fullname]));
+  const kids = undroppedIds.map((id) => ({ kidId: id, fullname: nameById.get(id) || 'Student' }));
+
+  if (!dto.forceEnd) {
+    throw new ConflictException({
+      success: false,
+      code: 'KIDS_NOT_DROPPED',
+      message:
+        `${kids.length} student${kids.length === 1 ? ' is' : 's are'} still marked as in the van: ` +
+        `${kids.map((k) => k.fullname).join(', ')}. Drop them first, or check the van and confirm.`,
+      kids,
+    });
+  }
+
+  if (!dto.confirmationNote || !dto.confirmationNote.trim()) {
+    throw new BadRequestException({
+      success: false,
+      code: 'CONFIRMATION_NOTE_REQUIRED',
+      message: 'A confirmation note is required to end the trip with students not dropped.',
+    });
+  }
+  return kids;
+}
+
+/** Alerts the school and the affected parents after a forced trip end. */
+private async notifyForcedEnd(
+  trip: any,
+  van: any,
+  driver: any,
+  kids: { kidId: string; fullname: string }[],
+  note: string,
+) {
+  const names = kids.map((k) => k.fullname).join(', ');
+  const driverName = driver?.fullname || 'Driver';
+  const message =
+    `${driverName} ended a drop trip with ${kids.length} student(s) not marked as dropped: ` +
+    `${names}. Driver note: "${note}"`;
+
+  try {
+    const alert = await this.databaseService.repositories.notificationModel.create({
+      type: 'child_left_behind',
+      alertType: 'KIDS_NOT_DROPPED',
+      recipientType: 'ADMIN',
+      infoType: 'Emergency',
+      driverId: driver?._id?.toString(),
+      schoolId: van.schoolId,
+      VanId: van._id.toString(),
+      title: 'Students not dropped',
+      message,
+      status: 'sent',
+      date: new Date(),
+    });
+
+    this.eventsGateway.emitToSchool(van.schoolId, 'childLeftBehindAlert', {
+      alertId: alert._id.toString(),
+      tripId: trip._id.toString(),
+      driverId: driver?._id?.toString(),
+      driverName,
+      vanId: van._id.toString(),
+      kids,
+      note,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[endTrip] admin alert for undropped kids failed:', e);
+  }
+
+  // Parents of these kids must not believe their child was dropped.
+  for (const k of kids) {
+    try {
+      const kid = await this.databaseService.repositories.KidModel.findById(k.kidId);
+      if (!kid?.parentId) continue;
+      const parent = await this.databaseService.repositories.parentModel.findOne({
+        _id: kid.parentId,
+        isDelete: false,
+      });
+      const title = 'Drop not confirmed';
+      const body = `The van trip has ended but ${kid.fullname}'s drop-off was not confirmed by the driver. Please contact the school.`;
+      if (parent?.fcmToken) {
+        // Sent even if the parent muted notifications — this is a safety alert.
+        await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+          notification: { title, body },
+          data: { type: 'drop_not_confirmed', kidId: k.kidId, tripId: trip._id.toString() },
+        });
+      }
+      await this.databaseService.repositories.notificationModel.create({
+        type: 'driver',
+        infoType: 'Emergency',
+        parentId: kid.parentId.toString(),
+        schoolId: van.schoolId,
+        VanId: van._id.toString(),
+        title,
+        message: body,
+        actionType: 'DROP_NOT_CONFIRMED',
+        status: 'sent',
+        date: new Date(),
+      });
+    } catch (e) {
+      console.error('[endTrip] parent alert for undropped kid failed:', e);
+    }
+  }
+}
+
 
 
 
@@ -493,8 +620,13 @@ async endTrip(driverId, dto: EndTripDto) {
     throw new BadRequestException("Van does not belong to this trip");
   }
 
-  // 4️⃣ Update trip kids status
-  trip.kids = trip.kids.map(kid => ({
+  // 🛡️ Child-left-behind check (drop trips). Throws 409 unless forced.
+  const forcedKids = await this.checkKidsDroppedBeforeEnd(trip, dto);
+  const forcedIds = new Set(forcedKids.map(k => k.kidId));
+
+  // 4️⃣ Update trip kids status (kids from a forced end stay 'picked' —
+  // nobody confirmed they got off the van).
+  trip.kids = trip.kids.map(kid => forcedIds.has(kid.kidId?.toString()) ? kid : ({
     ...kid,
     status: 'dropped',
     time: time ? new Date(time) : new Date(),
@@ -515,8 +647,14 @@ async endTrip(driverId, dto: EndTripDto) {
   // 🔥 NEW LOGIC STARTS HERE
   // ===============================
 
-  // 5️⃣ Get all kids data
-  const kidIds = trip.kids.map(k => new Types.ObjectId(k.kidId));
+  if (forcedKids.length) {
+    await this.notifyForcedEnd(trip, van, driver, forcedKids, dto.confirmationNote.trim());
+  }
+
+  // 5️⃣ Get all kids data (only kids actually dropped get "safely dropped")
+  const kidIds = trip.kids
+    .filter(k => !forcedIds.has(k.kidId?.toString()))
+    .map(k => new Types.ObjectId(k.kidId));
 
   const kids = await this.databaseService.repositories.KidModel.find(
     { _id: { $in: kidIds } },
@@ -590,6 +728,7 @@ async endTrip(driverId, dto: EndTripDto) {
   return {
     message: "Trip ended, notifications sent & saved",
     data: trip,
+    ...(forcedKids.length ? { undroppedKids: forcedKids } : {}),
   };
 }
 
@@ -878,6 +1017,9 @@ async endTripForDrop(driverId, dto: EndTripDto) {
     throw new BadRequestException("Trip already ended");
   }
 
+  // 🛡️ Child-left-behind check. Throws 409 unless forced.
+  const forcedKids = await this.checkKidsDroppedBeforeEnd(trip, dto);
+
   // ❌ NO kids update
 
   // 4️⃣ End trip only
@@ -890,9 +1032,14 @@ async endTripForDrop(driverId, dto: EndTripDto) {
 
   await trip.save();
 
+  if (forcedKids.length) {
+    await this.notifyForcedEnd(trip, van, driver, forcedKids, dto.confirmationNote.trim());
+  }
+
   return {
     message: "Drop trip ended successfully",
     data: trip,
+    ...(forcedKids.length ? { undroppedKids: forcedKids } : {}),
   };
 }
 
