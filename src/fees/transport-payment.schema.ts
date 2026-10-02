@@ -32,7 +32,7 @@ export class TransportPayment {
 
   @Prop({
     required: true,
-    enum: ['cash', 'jazzcash', 'easypaisa', 'bank_transfer', 'card', 'other'],
+    enum: ['cash', 'jazzcash', 'easypaisa', 'raast', 'bank_transfer', 'card', 'other'],
     default: 'cash',
   })
   paymentMethod: string;
