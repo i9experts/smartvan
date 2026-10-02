@@ -6,6 +6,7 @@ export interface CustomSocket extends Socket {
     userId?: string;
     userType?: string;
     role?: string; // admin/superadmin tokens use this instead of userType
+    schoolId?: string; // school_staff tokens
     // Add any other properties your JWT might contain
   };
 }

@@ -88,6 +88,64 @@ afterInit(server: Server) {
     console.log('Socket disconnected:', socket.id);
   }
 
+  // ─── Server-side emit helpers (used by services) ─────────────────────
+
+  /** Room every admin/staff socket of a school joins via `joinSchoolAlerts`. */
+  static schoolRoom(schoolId: string): string {
+    return `school:${schoolId}`;
+  }
+
+  /** Best-effort emit — never throws into the caller's request flow. */
+  emitToRoom(room: string, event: string, payload: unknown): void {
+    try {
+      this.server?.to(room).emit(event, payload);
+    } catch (e) {
+      console.error(`[EventsGateway] emit ${event} to ${room} failed:`, e);
+    }
+  }
+
+  emitToSchool(schoolId: string, event: string, payload: unknown): void {
+    if (!schoolId) return;
+    this.emitToRoom(EventsGateway.schoolRoom(schoolId), event, payload);
+  }
+
+  /**
+   * Admin dashboards join their school's alert room to receive SOS,
+   * child-left-behind and checklist alerts in real time, without having
+   * to be watching a specific trip.
+   */
+  @SubscribeMessage('joinSchoolAlerts')
+  async joinSchoolAlerts(
+    @MessageBody() data: { schoolId?: string },
+    @ConnectedSocket() socket: CustomSocket,
+  ) {
+    const role = socket?.decoded_token?.role;
+    const userId = socket?.decoded_token?.userId || socket?.decoded_token?.sub;
+    if (!userId) {
+      socket.emit('error', { msg: 'Not authenticated' });
+      return;
+    }
+
+    let schoolId: string | null = null;
+    if (role === 'admin') {
+      const school = await this.databaseService.repositories.SchoolModel.findOne({
+        admin: new Types.ObjectId(userId),
+      }).lean();
+      schoolId = school?._id?.toString() ?? null;
+    } else if (role === 'school_staff') {
+      schoolId = socket?.decoded_token?.schoolId ?? null;
+    } else if (role === 'superadmin') {
+      schoolId = data?.schoolId ?? null;
+    }
+
+    if (!schoolId) {
+      socket.emit('error', { msg: 'Not authorized for school alerts' });
+      return;
+    }
+    socket.join(EventsGateway.schoolRoom(schoolId));
+    this.server.to(socket.id).emit('joinedSchoolAlerts', { schoolId });
+  }
+
   @SubscribeMessage('startTrip')
   async startTrip(
     @MessageBody() data: { tripId: string },
