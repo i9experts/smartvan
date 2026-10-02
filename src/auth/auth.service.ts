@@ -14,6 +14,7 @@ import { DatabaseService } from "src/database/databaseservice";
 import { OtpService } from 'src/user/schema/otp/otp.service';
 import { OAuth2Client } from 'google-auth-library';
 import axios from 'axios';
+import { phoneLoginVariants } from './phone-variants.util';
 
 
 @Injectable()
@@ -151,7 +152,7 @@ async loginUser(loginData: any) {
     const user = await userModel.findOne({
       $or: [
         { email: identifier },
-        { phoneNo: identifier },
+        { phoneNo: { $in: phoneLoginVariants(identifier) } },
         { NIC: identifier },
       ],
     });
