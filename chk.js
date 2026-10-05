@@ -1,2 +1,0 @@
-if (!process.env.MONGODB_URI) { console.error('Set MONGODB_URI first, e.g. MONGODB_URI="mongodb+srv://..." node <script>'); process.exit(1); }
-const m=require('mongoose');m.connect(process.env.MONGODB_URI).then(async()=>{const admin=await m.connection.db.collection('admins').findOne({email:'waliiqbal2020@gmail.com'});console.log('role:',admin.role,'id:',admin._id);const school=await m.connection.db.collection('schools').findOne({admin:admin._id.toString()});console.log('school:',school?school.name:'NOT FOUND');process.exit();});
