@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, UnauthorizedException, NotFoundExcepti
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from "src/database/databaseservice";
+import { sendWithTimeout } from "src/common/send-with-timeout.util";
 import { OtpService } from 'src/user/schema/otp/otp.service';
 import * as crypto from 'crypto';
 import { AddStudentDto } from './dto/addStudent.dto';
@@ -76,9 +77,10 @@ async createAdminAndSchool(body: any) {
     .findById(school._id)
     .select('-createdAt -updatedAt -__v');
 
-    this.otpService.sendPassword(adminInfo.email, randomPassword).catch((err) => {
-      console.error('Failed to send new-admin password email:', err.message);
-    });
+    await sendWithTimeout(
+      this.otpService.sendPassword(adminInfo.email, randomPassword),
+      'new-admin password email',
+    );
 
   return {
     message: 'Admin and school created successfully.',
@@ -182,9 +184,10 @@ async editAdminAndSchool(body: any) {
       );
 
       // Send new password to the new email
-      this.otpService.sendPassword(newEmail, randomPassword).catch((err) => {
-        console.error('Failed to send changed-admin-email password email:', err.message);
-      });
+      await sendWithTimeout(
+        this.otpService.sendPassword(newEmail, randomPassword),
+        'changed-admin-email password email',
+      );
     } else {
       // Agar email change nahi, normal update
       await this.databaseService.repositories.AdminModel.updateOne(
@@ -344,9 +347,10 @@ async resendOtpForResetPassword(email: string) {
     // 📧 Send OTP email — fire-and-forget so a slow/unreachable SMTP
     // server can't hang this request indefinitely (the OTP is already
     // saved and returned below regardless of whether the email arrives).
-    this.otpService.sendOtp(admin.email, newOtp).catch((err) => {
-      console.error('Failed to send reset-password OTP email:', err.message);
-    });
+    await sendWithTimeout(
+      this.otpService.sendOtp(admin.email, newOtp),
+      'reset-password OTP email',
+    );
 
     return {
       message: 'OTP sent successfully to your email for password reset',
@@ -383,9 +387,10 @@ async forgotPasswordService(email: string) {
   // 5️⃣ Email bhejo OTP — fire-and-forget so a slow/unreachable SMTP
   // server can't hang this request indefinitely (the OTP is already
   // saved and returned below regardless of whether the email arrives).
-  this.otpService.sendOtp(admin.email, otp).catch((err) => {
-    console.error('Failed to send forgot-password OTP email:', err.message);
-  });
+  await sendWithTimeout(
+    this.otpService.sendOtp(admin.email, otp),
+    'forgot-password OTP email',
+  );
 
     const newToken = this.jwtService.sign(
     {
@@ -627,9 +632,10 @@ async getallschool() {
             const randomPassword = crypto.randomBytes(6).toString('hex');
             const hashedPassword = await bcrypt.hash(randomPassword, 10);
 
-            this.otpService.sendPassword(parentEmail, randomPassword, 'parent').catch((err) => {
-              console.error('Failed to send new-parent password email:', err.message);
-            });
+            await sendWithTimeout(
+              this.otpService.sendPassword(parentEmail, randomPassword, 'parent'),
+              'new-parent password email',
+            );
 
             parent = new this.databaseService.repositories.parentModel({
               email: parentEmail,
@@ -724,9 +730,10 @@ const adminObjectId = new Types.ObjectId(AdminId);
 
   const hashedPassword = await bcrypt.hash(randomPassword, 10);
 
-  this.otpService.sendPassword(parentEmail, randomPassword, 'parent').catch((err) => {
-    console.error('Failed to send new-parent password email:', err.message);
-  });
+  await sendWithTimeout(
+    this.otpService.sendPassword(parentEmail, randomPassword, 'parent'),
+    'new-parent password email',
+  );
 
     parent = new this.databaseService.repositories.parentModel({
       email: parentEmail,
