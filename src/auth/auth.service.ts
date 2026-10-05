@@ -3,6 +3,7 @@ import { BadRequestException, InternalServerErrorException, Injectable, Unauthor
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
 import { Logger } from '@nestjs/common';
+import { sendWithTimeout } from 'src/common/send-with-timeout.util';
 import { User, UserDocument } from '../user/schema/user.schema';
 import { Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
@@ -84,9 +85,10 @@ async registerUser(registerDto: RegisterDto) {
         await existingUser.save();
 
         // OTP send karo
-        this.otpService.sendOtp(email, existingUser.otp).catch((err) => {
-          console.error('Failed to send registration OTP email:', err.message);
-        });
+        await sendWithTimeout(
+          this.otpService.sendOtp(email, existingUser.otp),
+          'registration OTP email',
+        );
 
         return {
           message: 'Your account was deleted before, we have reactivated it. OTP sent again.',
@@ -119,9 +121,10 @@ async registerUser(registerDto: RegisterDto) {
     const user = new userModel(userData);
     await user.save();
 
-    this.otpService.sendOtp(email, otp).catch((err) => {
-      console.error('Failed to send registration OTP email:', err.message);
-    });
+    await sendWithTimeout(
+      this.otpService.sendOtp(email, otp),
+      'registration OTP email',
+    );
 
     return {
       message: 'OTP sent successfully to your email/phone',
@@ -244,9 +247,10 @@ async resendOtp(email: string, userType: string) {
     user.otpExpiresAt = otpExpiresAt;
     await user.save();
 
-    this.otpService.sendOtp(user.email, newOtp).catch((err) => {
-      console.error('Failed to send OTP email:', err.message);
-    });
+    await sendWithTimeout(
+      this.otpService.sendOtp(user.email, newOtp),
+      'resend OTP email',
+    );
 
     return {
       message: 'New OTP sent successfully to your email',
@@ -615,9 +619,10 @@ async forgotPassword(email: string, userType: string) {
     await user.save();
 
     // 📧 Step 5: Send OTP to user's email
-    this.otpService.sendOtp(user.email, otp).catch((err) => {
-      console.error('Failed to send OTP email:', err.message);
-    });
+    await sendWithTimeout(
+      this.otpService.sendOtp(user.email, otp),
+      'forgot-password OTP email (parent/driver)',
+    );
 
     // ✅ Step 6: Response return
     return {
@@ -693,9 +698,10 @@ async resendOtpForResetPassword(email: string, userType: string) {
     user.otpExpiresAt = otpExpiresAt;
     await user.save();
 
-    this.otpService.sendOtp(user.email, newOtp).catch((err) => {
-      console.error('Failed to send OTP email:', err.message);
-    });
+    await sendWithTimeout(
+      this.otpService.sendOtp(user.email, newOtp),
+      'resend-reset-password OTP email',
+    );
 
     return {
       message: 'OTP sent successfully to your email for password reset',
