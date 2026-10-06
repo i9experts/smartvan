@@ -737,6 +737,14 @@ async updateProfile(
 
   const updateFields: any = { ...editDto };
 
+  // Passwords are stored bcrypt-hashed and login uses bcrypt.compare —
+  // writing the raw value here would make the account unable to log in.
+  if (updateFields.password) {
+    updateFields.password = await bcrypt.hash(updateFields.password, 10);
+  } else {
+    delete updateFields.password;
+  }
+
   // Email changes need a collision check — never trust it blindly,
   // matching the pattern used for admin profile updates.
   if ((editDto as any).email && (userType === 'driver' || userType === 'parent')) {
@@ -798,9 +806,16 @@ async editDriverByAdmin(adminId: string, driverId: string, editDto: EditDriverDt
     throw new BadRequestException('Driver not found in this school');
   }
 
+  const updateFields: any = { ...editDto };
+  if (updateFields.password) {
+    updateFields.password = await bcrypt.hash(updateFields.password, 10);
+  } else {
+    delete updateFields.password;
+  }
+
   const updatedDriver = await this.databaseService.repositories.driverModel.findByIdAndUpdate(
     driverId,
-    { $set: editDto },
+    { $set: updateFields },
     { new: true },
   );
 
