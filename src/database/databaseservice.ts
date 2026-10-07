@@ -50,6 +50,8 @@ export class DatabaseService {
     private AuditLogModel: Model<schema.AuditLogDocument>,
       @InjectModel(schema.PretripChecklist.name)
     private PretripChecklistModel: Model<schema.PretripChecklistDocument>,
+      @InjectModel(schema.KidAbsence.name)
+    private KidAbsenceModel: Model<schema.KidAbsenceDocument>,
      ) {}
      get repositories() {
     return {
@@ -72,6 +74,7 @@ export class DatabaseService {
       vanSchoolLinkModel: this.VanSchoolLinkModel,
       auditLogModel: this.AuditLogModel,
       pretripChecklistModel: this.PretripChecklistModel,
+      kidAbsenceModel: this.KidAbsenceModel,
         };
   }
 }

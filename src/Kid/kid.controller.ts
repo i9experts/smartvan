@@ -1,17 +1,55 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Get,  Req, Query, Param } from '@nestjs/common';
+import { Body, Controller, Post, Get,  Req, Query, Param, UnauthorizedException } from '@nestjs/common';
 import { KidService } from './kid.service'
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { CreateKidDto } from './dto/CreateKid.dto';
 import { KidQrService } from './kid-qr.service';
+import { KidAbsenceService } from './kid-absence.service';
 
 @Controller('kid')
 export class KidController {
   constructor(
     private readonly KidService: KidService,
     private readonly kidQrService: KidQrService,
+    private readonly kidAbsenceService: KidAbsenceService,
   ) {}
+
+  // ─── Absences (parent marks a child as not riding) ───────────────────
+
+  private requireParent(req: any) {
+    if (req.user?.userType !== 'parent') throw new UnauthorizedException('Only parents can manage absences');
+  }
+
+  /** Body { kidId, date: 'YYYY-MM-DD', tripType?: 'pick'|'drop'|'both', note? } */
+  @UseGuards(AuthGuard('jwt'))
+  @Post('absence')
+  async createAbsence(@Req() req: any, @Body() body: any) {
+    this.requireParent(req);
+    return this.kidAbsenceService.create(req.user.userId, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('absence')
+  async listAbsences(@Req() req: any, @Query('kidId') kidId?: string) {
+    this.requireParent(req);
+    return this.kidAbsenceService.listForParent(req.user.userId, kidId);
+  }
+
+  /** Driver: today's absences on their van. */
+  @UseGuards(AuthGuard('jwt'))
+  @Get('absence/today')
+  async todayAbsences(@Req() req: any) {
+    if (req.user?.userType !== 'driver') throw new UnauthorizedException('Only drivers can access this API');
+    return this.kidAbsenceService.todayForDriver(req.user.userId);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('absence/:id/cancel')
+  async cancelAbsence(@Req() req: any, @Param('id') id: string) {
+    this.requireParent(req);
+    return this.kidAbsenceService.cancel(req.user.userId, id);
+  }
 
   // ─── Student QR cards (admin / school staff) ─────────────────────────
 
