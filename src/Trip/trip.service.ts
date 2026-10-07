@@ -36,6 +36,7 @@ const etaCache = new Map<string, { at: number; eta: CachedEta[] }>();
 const ETA_REFRESH_MS = 60_000;
 import { ScanStudentDto } from './dto/scan-student.dto';
 import { parseQrPayload } from 'src/Kid/kid-qr.util';
+import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
 import {
   checklistDate,
@@ -52,6 +53,104 @@ export class TripService {
    private readonly geofenceService: GeofenceService,
    private readonly eventsGateway: EventsGateway,
   ) {} 
+
+// ─── Absences, waiting at stop, no-shows ────────────────────────────────
+
+/** Route kids with a parent-marked absence covering a trip of [tripType] today. */
+private async absentKidIdsToday(kidIds: string[], tripType: string): Promise<Set<string>> {
+  if (!kidIds.length) return new Set();
+  const docs: any[] = await this.databaseService.repositories.kidAbsenceModel
+    .find({ kidId: { $in: kidIds }, date: todayIn(TZ) }, { kidId: 1, tripType: 1 })
+    .lean();
+  return new Set(docs.filter(d => absenceCovers(d.tripType, tripType)).map(d => d.kidId));
+}
+
+/** Common checks: ongoing trip on the caller's van, kid on its route. */
+private async loadTripForStopAction(driverId: string, tripId: string, kidId: string) {
+  const fail = (code: string, message: string) => new BadRequestException({ success: false, code, message });
+  if (!Types.ObjectId.isValid(tripId)) throw fail('TRIP_NOT_FOUND', 'Trip not found');
+  if (!Types.ObjectId.isValid(kidId)) throw fail('KID_NOT_ON_TRIP', 'Student not found');
+  const repos = this.databaseService.repositories;
+  const trip = await repos.TripModel.findById(tripId);
+  if (!trip) throw fail('TRIP_NOT_FOUND', 'Trip not found');
+  if (trip.status !== 'ongoing') throw fail('TRIP_NOT_ONGOING', 'This trip is not in progress.');
+  const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }).lean();
+  if (!van || trip.vanId !== van._id.toString()) throw fail('TRIP_NOT_YOURS', 'This trip does not belong to your van.');
+  const route: any = await repos.routeModel.findById(trip.routeId, { kidLocations: 1 }).lean();
+  const onRoute = (route?.kidLocations || []).some((kl: any) => kl?.kidId?.toString() === kidId);
+  if (!onRoute) throw fail('KID_NOT_ON_TRIP', 'This student is not on this route.');
+  const kid: any = await repos.KidModel.findById(kidId, { fullname: 1, parentId: 1 }).lean();
+  const parent: any = kid?.parentId
+    ? await repos.parentModel.findOne({ _id: kid.parentId, isDelete: false }, { fcmToken: 1 }).lean()
+    : null;
+  return { trip, van, kid, parent };
+}
+
+private async pushParent(parent: any, kid: any, van: any, title: string, body: string, data: Record<string, string>) {
+  try {
+    if (parent?.fcmToken) {
+      await this.firebaseAdminService.sendToDevice(parent.fcmToken, { notification: { title, body }, data });
+    }
+    if (kid?.parentId) {
+      await this.databaseService.repositories.notificationModel.create({
+        type: 'driver', infoType: 'Trip', parentId: kid.parentId.toString(),
+        schoolId: van.schoolId, VanId: van._id.toString(), title, message: body,
+        actionType: data.type, status: 'sent', date: new Date(),
+      });
+    }
+  } catch (e) {
+    console.error('[stop action] parent notify failed:', e);
+  }
+}
+
+/**
+ * Driver is at the kid's stop. Tells the parent once per kid per trip
+ * ("send your child out" on pick trips, "arrived home" on drop trips).
+ */
+async arrivedAtStop(driverId: string, body: { tripId: string; kidId: string }) {
+  const { trip, van, kid, parent } = await this.loadTripForStopAction(driverId, body?.tripId, body?.kidId);
+  const existing = (trip.stopWaits || []).find(w => w.kidId === body.kidId);
+  if (existing) {
+    return { success: true, message: 'Parent already informed', data: { kidId: body.kidId, waitingSince: existing.at } };
+  }
+  const at = new Date();
+  await this.databaseService.repositories.TripModel.updateOne(
+    { _id: trip._id }, { $push: { stopWaits: { kidId: body.kidId, at } } },
+  );
+  const name = kid?.fullname || 'your child';
+  const pick = trip.type !== 'drop';
+  await this.pushParent(parent, kid, van,
+    pick ? 'Van is at your stop' : 'Van has arrived home',
+    pick ? `The van is waiting for ${name}. Please send them out now.` : `The van is at your home with ${name}.`,
+    { type: 'VAN_AT_STOP', tripId: trip._id.toString(), kidId: body.kidId },
+  );
+  return { success: true, message: 'Parent informed', data: { kidId: body.kidId, waitingSince: at } };
+}
+
+/** Pick trips: kid wasn't at the stop and the driver is moving on. */
+async markNoShow(driverId: string, body: { tripId: string; kidId: string; note?: string }) {
+  const { trip, van, kid, parent } = await this.loadTripForStopAction(driverId, body?.tripId, body?.kidId);
+  const fail = (code: string, message: string) => new BadRequestException({ success: false, code, message });
+  if (trip.type === 'drop') throw fail('NOT_PICK_TRIP', 'No-show can only be marked on pick trips.');
+  if ((trip.kids || []).some(k => k.kidId === body.kidId)) {
+    throw fail('ALREADY_PICKED', `${kid?.fullname || 'This student'} is already on the van.`);
+  }
+  if ((trip.noShows || []).some(n => n.kidId === body.kidId)) {
+    return { success: true, message: 'Already marked' };
+  }
+  const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 200) : undefined;
+  await this.databaseService.repositories.TripModel.updateOne(
+    { _id: trip._id },
+    { $push: { noShows: { kidId: body.kidId, at: new Date(), ...(note ? { note } : {}) } } },
+  );
+  const name = kid?.fullname || 'Your child';
+  await this.pushParent(parent, kid, van,
+    'Van has left your stop',
+    `${name} wasn't at the stop, so the van moved on. Please contact the driver or school.`,
+    { type: 'NO_SHOW', tripId: trip._id.toString(), kidId: body.kidId },
+  );
+  return { success: true, message: 'Marked as not at stop' };
+}
 
 // ─── Pre-trip vehicle checklist ─────────────────────────────────────────
 
@@ -1803,6 +1902,9 @@ async generateGraphData(
     const route = await repos.routeModel.findById(trip.routeId);
     const routeKidIds = (route?.kidLocations || []).map(kl => kl.kidId.toString());
     const waiting = new Set(waitingKidIds(trip.type, routeKidIds, trip.kids));
+    // Kids marked absent for this trip, or skipped as no-show, aren't waiting.
+    for (const id of await this.absentKidIdsToday(routeKidIds, trip.type)) waiting.delete(id);
+    for (const ns of trip.noShows || []) waiting.delete(ns.kidId);
 
     // kidId → { stop, kid, parent } for waiting kids
     const stops = new Map<string, { lat: number; lng: number; kid: any; parent: any }>();

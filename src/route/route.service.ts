@@ -5,6 +5,7 @@ import { Model } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
 import { Types } from 'mongoose';
 import { CreateRouteDto } from './dto/createRoutedto';
+import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { Trip } from 'src/database/schema';
 
 
@@ -230,6 +231,22 @@ async getMergedActivePassengers(driverId: string) {
     const kidById: Record<string, any> = {};
     stopKids.forEach((k: any) => { kidById[k._id.toString()] = k; });
 
+    // Parent-marked absences covering this trip today, plus stop status.
+    const tz = process.env.DEFAULT_TIMEZONE || 'Asia/Karachi';
+    const absences: any[] = stopKidIds.length
+      ? await this.databaseService.repositories.kidAbsenceModel.find(
+          { kidId: { $in: stopKidIds }, date: todayIn(tz) },
+          { kidId: 1, tripType: 1, note: 1 },
+        ).lean()
+      : [];
+    const absenceByKid: Record<string, any> = {};
+    absences
+      .filter((a: any) => absenceCovers(a.tripType, (trip as any).type))
+      .forEach((a: any) => { absenceByKid[a.kidId] = a; });
+    const waitByKid: Record<string, Date> = {};
+    ((trip as any).stopWaits || []).forEach((w: any) => { waitByKid[w.kidId] = w.at; });
+    const noShowKids = new Set(((trip as any).noShows || []).map((n: any) => n.kidId));
+
     for (const stop of ((route as any).kidLocations || [])) {
       const kidIdStr = stop.kidId?.toString();
       const kid = kidById[kidIdStr];
@@ -247,6 +264,10 @@ async getMergedActivePassengers(driverId: string) {
         pickupTime: tripKid?.time || null,
         lat: stop.lat,
         long: stop.long,
+        absent: !!absenceByKid[kidIdStr],
+        absenceNote: absenceByKid[kidIdStr]?.note || null,
+        waitingSince: waitByKid[kidIdStr] || null,
+        noShow: noShowKids.has(kidIdStr),
       });
     }
   }

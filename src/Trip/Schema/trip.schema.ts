@@ -100,6 +100,14 @@ export class Trip {
 
   @Prop({ type: Date })
   lastOverspeedAlertAt?: Date;
+
+  // Driver pressed "At stop" for a kid (parent was told the van is waiting)
+  @Prop({ type: [{ kidId: String, at: Date }], default: [] })
+  stopWaits: { kidId: string; at: Date }[];
+
+  // Kid wasn't at the stop and the driver moved on (pick trips)
+  @Prop({ type: [{ kidId: String, at: Date, note: String }], default: [] })
+  noShows: { kidId: string; at: Date; note?: string }[];
 }
 
 export const TripSchema = SchemaFactory.createForClass(Trip);

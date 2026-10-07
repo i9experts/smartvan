@@ -56,6 +56,20 @@ export class TripController {
     return this.tripService.submitChecklist(req.user.userId, dto);
   }
 
+  /** Body { tripId, kidId } — tells the parent the van is at the stop. */
+  @UseGuards(AuthGuard('jwt'))
+  @Post('arrivedAtStop')
+  async arrivedAtStop(@Body() body: { tripId: string; kidId: string }, @Req() req: any) {
+    return this.tripService.arrivedAtStop(req.user.userId, body);
+  }
+
+  /** Body { tripId, kidId, note? } — pick trips: kid wasn't at the stop. */
+  @UseGuards(AuthGuard('jwt'))
+  @Post('noShow')
+  async noShow(@Body() body: { tripId: string; kidId: string; note?: string }, @Req() req: any) {
+    return this.tripService.markNoShow(req.user.userId, body);
+  }
+
   /** Driver scans a student's QR card → pick or drop. */
   @UseGuards(AuthGuard('jwt'))
   @Post('scanStudent')
