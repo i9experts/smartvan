@@ -117,7 +117,7 @@ async getReportByIdByDriver
 
    @UseGuards(AuthGuard('jwt')) // Token guard
   @Get("getComplainsByAdmin")
-  async getComplainsByAdmin( 
+  async getComplainsByAdmin(
     @Req() req: any,
     @Query() query: any,
     @Query('page') page: string,
@@ -127,6 +127,19 @@ async getReportByIdByDriver
      const pageNumber = page ? parseInt(page) : 1;
     const limitNumber = limit ? parseInt(limit) : 10;
     return this.reportService.getReportsForAdmin( caller.id, caller.role, query);
+  }
+
+  // Full, unpaginated roster for the printable complaint/issue register
+  // report — a school admin's own school only (not the superadmin's
+  // platform-wide view, which doesn't fit a single-school print format).
+  @UseGuards(AuthGuard('jwt'))
+  @Get('getComplaintRegisterReport')
+  async getComplaintRegisterReport(@Req() req: any) {
+    const caller = await this.resolveCallerForReports(req.user);
+    if (caller.role !== 'admin') {
+      throw new UnauthorizedException('Only a school admin can generate this report');
+    }
+    return this.reportService.getComplaintRegisterReport(caller.id);
   }
 
   
