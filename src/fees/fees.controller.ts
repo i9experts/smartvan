@@ -4,6 +4,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { Types } from 'mongoose';
 import { FeesService } from './fees.service';
 import { DatabaseService } from 'src/database/databaseservice';
+import { findDriverVanAndKids } from './driver-van-kids';
 import { OnlinePaymentsService } from './online-payments.service';
 
 @Controller('fees')
@@ -164,11 +165,20 @@ export class FeesController {
     // caller's own identity instead, exactly like every other endpoint here.
     let callerSchoolId: string;
     if (req.user?.userType === 'driver') {
-      const driver = await this.databaseService.repositories.driverModel.findById(req.user.userId);
-      if (!driver || !(driver as any).schoolId) {
-        throw new UnauthorizedException('Driver has no assigned school');
+      // A driver may record fees only for students who ride their van, and
+      // the payment belongs to the student's school (vans can be shared
+      // between schools, so the driver's own schoolId isn't enough).
+      let kidId: string | undefined = body?.kidId;
+      if (!kidId && body?.paymentId) {
+        const payment: any = await this.onlinePayments.findPaymentKid(body.paymentId);
+        kidId = payment?.kidId;
       }
-      callerSchoolId = (driver as any).schoolId;
+      const { kids } = await findDriverVanAndKids(this.databaseService, req.user.userId);
+      const kid: any = kids.find((k: any) => k._id.toString() === kidId);
+      if (!kid) {
+        throw new ForbiddenException('This student does not ride your van');
+      }
+      callerSchoolId = kid.schoolId;
     } else {
       callerSchoolId = await this.resolveSchoolId(req, body.schoolId);
     }
