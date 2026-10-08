@@ -29,7 +29,7 @@ export class ContactController {
         subject: `[SmartVan Contact] ${subject || 'General Inquiry'} — ${name}`,
         html: `
           <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-            <div style="background:#1B3B69;padding:20px;border-radius:8px 8px 0 0">
+            <div style="background:#1B3B69;padding:20px;border-radius:8px 8px 0 0"><img src="https://app.smartvan.pk/favicon-192.png" alt="SmartVan" width="56" height="56" style="display:block;margin:0 auto 10px;border-radius:12px">
               <h2 style="color:white;margin:0">New Contact Form Submission</h2>
               <p style="color:rgba(255,255,255,0.7);margin:5px 0 0">SmartVan Marketing Website</p>
             </div>
@@ -43,7 +43,7 @@ export class ContactController {
                 <p style="color:#6b7280;font-size:12px;margin:0 0 8px">Message:</p>
                 <p style="color:#1a1a2e;font-size:14px;line-height:1.6;margin:0">${message.replace(/\n/g, '<br>')}</p>
               </div>
-              <div style="margin-top:20px;padding:12px;background:#FFB800;border-radius:8px;text-align:center">
+              <div style="margin-top:20px;padding:12px;background:#FEC610;border-radius:8px;text-align:center">
                 <a href="mailto:${email}" style="color:#1B3B69;font-weight:700;text-decoration:none">Reply to ${name} →</a>
               </div>
             </div>
