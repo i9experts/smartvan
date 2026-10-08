@@ -174,6 +174,14 @@ async editVanByAdmin(
     );
   }
 
+  @UseGuards(AuthGuard('jwt'))
+  @Get('getDriverRegisterReport')
+  async getDriverRegisterReport(@Req() req: any) {
+    this.requireFleetPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
+    return this.vanService.getDriverRegisterReport(adminId);
+  }
+
     @UseGuards(AuthGuard('jwt'))
     @Get("getVanById/:id")
   async getVan(@Param("id") id: string) {

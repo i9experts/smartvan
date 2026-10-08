@@ -1582,6 +1582,83 @@ async getAllDriversByAdmin(
     },
   };
 }
+
+// Full, unpaginated roster for the printable driver register report —
+// same scoping as getAllDriversByAdmin (own-school drivers plus drivers
+// whose current van is merely linked to this school), minus the
+// search/status filters and pagination, since a register wants every
+// driver in one shot.
+async getDriverRegisterReport(adminId: string) {
+  const adminObjectId = new Types.ObjectId(adminId);
+
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: adminObjectId,
+  });
+
+  if (!school) {
+    throw new UnauthorizedException('School not found');
+  }
+
+  const linkedVanIds = await this.getLinkedVanIds(school._id.toString());
+  const linkedVans = linkedVanIds.length
+    ? await this.databaseService.repositories.VanModel.find({
+        _id: { $in: linkedVanIds.map((id) => new Types.ObjectId(id)) },
+      }).select('driverId').lean()
+    : [];
+  const linkedDriverIds = linkedVans.map((v: any) => v.driverId).filter(Boolean);
+
+  const drivers = await this.databaseService.repositories.driverModel
+    .find({
+      isDelete: false,
+      $or: [{ schoolId: school._id.toString() }, { _id: { $in: linkedDriverIds } }],
+    })
+    .select(
+      'fullname email phoneNo alternatePhoneNo NIC address status image lastLoginAt createdAt ' +
+        'licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack expiryDateLicense expiryDateVehicleCard',
+    )
+    .sort({ fullname: 1 })
+    .lean();
+
+  const driverIds = drivers.map((d: any) => d._id);
+  const vans = await this.databaseService.repositories.VanModel
+    .find({ driverId: { $in: driverIds } })
+    .select('carNumber vehicleType driverId')
+    .lean();
+  const vanByDriverId: Record<string, any> = {};
+  vans.forEach((v: any) => {
+    if (v.driverId) vanByDriverId[v.driverId.toString()] = v;
+  });
+
+  const data = drivers.map((d: any) => {
+    const van = vanByDriverId[d._id.toString()];
+    return {
+      id: d._id.toString(),
+      fullname: d.fullname || '',
+      email: d.email || '',
+      phoneNo: d.phoneNo || '',
+      alternatePhoneNo: d.alternatePhoneNo || '',
+      NIC: d.NIC || '',
+      address: d.address || '',
+      status: d.status || '',
+      image: d.image || '',
+      appLinked: !!d.lastLoginAt,
+      lastLoginAt: d.lastLoginAt || null,
+      createdAt: d.createdAt,
+      licenceComplete: !!(d.licenceImageFront && d.licenceImageBack),
+      vehicleCardComplete: !!(d.vehicleCardImageFront && d.vehicleCardImageBack),
+      expiryDateLicense: d.expiryDateLicense || '',
+      expiryDateVehicleCard: d.expiryDateVehicleCard || '',
+      van: van ? { carNumber: van.carNumber || '', vehicleType: van.vehicleType || '' } : null,
+    };
+  });
+
+  return {
+    message: 'Driver register report fetched successfully',
+    data,
+    schoolName: (school as any).schoolName,
+  };
+}
+
 async getDriverById(driverId: string) {
   if (!driverId) {
     throw new BadRequestException('Driver ID is required');
