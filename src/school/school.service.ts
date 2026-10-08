@@ -67,7 +67,7 @@ export class SchoolService {
         subject: `🆕 New School Registration — ${body.schoolName}`,
         html: `
           <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-            <div style="background:#1B2B6B;padding:24px;border-radius:12px 12px 0 0">
+            <div style="background:#1B3B69;padding:24px;border-radius:12px 12px 0 0">
               <h2 style="color:#FFB800;margin:0">New School Registration</h2>
               <p style="color:rgba(255,255,255,0.7);margin:4px 0 0">Submitted via smartvan.pk</p>
             </div>
@@ -81,7 +81,7 @@ export class SchoolService {
                 <tr><td colspan="2" style="padding:12px 0 4px;border-top:1px solid #e5e7eb"></td></tr>
                 <tr><td style="padding:8px 0;color:#6b7280">Admin Name</td><td style="padding:8px 0;font-weight:600;color:#1a1a2e">${body.adminName}</td></tr>
                 <tr><td style="padding:8px 0;color:#6b7280">Designation</td><td style="padding:8px 0;font-weight:600;color:#1a1a2e">${body.designation}</td></tr>
-                <tr><td style="padding:8px 0;color:#6b7280">Email</td><td style="padding:8px 0;font-weight:600;color:#1B2B6B">${body.email}</td></tr>
+                <tr><td style="padding:8px 0;color:#6b7280">Email</td><td style="padding:8px 0;font-weight:600;color:#1B3B69">${body.email}</td></tr>
                 <tr><td style="padding:8px 0;color:#6b7280">Phone</td><td style="padding:8px 0;font-weight:600;color:#1a1a2e">${body.phone}</td></tr>
                 <tr><td colspan="2" style="padding:12px 0 4px;border-top:1px solid #e5e7eb"></td></tr>
                 <tr><td style="padding:8px 0;color:#6b7280">Plan</td><td style="padding:8px 0;font-weight:600;color:#1a1a2e">${body.plan}</td></tr>
@@ -89,7 +89,7 @@ export class SchoolService {
                 ${body.challenges ? `<tr><td style="padding:8px 0;color:#6b7280;vertical-align:top">Challenges</td><td style="padding:8px 0;color:#1a1a2e">${body.challenges}</td></tr>` : ''}
               </table>
               <div style="margin-top:20px;text-align:center">
-                <a href="https://app.smartvan.pk/auth/login" style="background:#1B2B6B;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">View in Admin Panel →</a>
+                <a href="https://app.smartvan.pk/auth/login" style="background:#1B3B69;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">View in Admin Panel →</a>
               </div>
             </div>
           </div>
@@ -169,21 +169,21 @@ export class SchoolService {
             to: lead.email,
             subject: 'Welcome to SmartVan — Your Account is Ready!',
             html: '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">' +
-              '<div style="background:#1B2B6B;padding:28px;border-radius:12px 12px 0 0;text-align:center">' +
+              '<div style="background:#1B3B69;padding:28px;border-radius:12px 12px 0 0;text-align:center">' +
               '<h1 style="color:#FFB800;margin:0;font-size:24px">Welcome to SmartVan!</h1>' +
               '<p style="color:rgba(255,255,255,0.7);margin:8px 0 0">Your school transport management account is ready</p>' +
               '</div>' +
               '<div style="background:#f8f9fc;padding:28px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">' +
               '<p style="color:#1a1a2e;font-size:15px">Dear <strong>' + lead.adminName + '</strong>,</p>' +
               '<p style="color:#6b7280;font-size:14px;line-height:1.7">Your SmartVan account for <strong>' + lead.schoolName + '</strong> has been activated. Here are your login credentials:</p>' +
-              '<div style="background:#1B2B6B;border-radius:10px;padding:20px;margin:20px 0;text-align:center">' +
+              '<div style="background:#1B3B69;border-radius:10px;padding:20px;margin:20px 0;text-align:center">' +
               '<p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0 0 4px">Login Email</p>' +
               '<p style="color:#FFB800;font-size:18px;font-weight:700;margin:0 0 16px">' + lead.email + '</p>' +
               '<p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0 0 4px">Temporary Password</p>' +
               '<p style="color:#FFB800;font-size:24px;font-weight:800;letter-spacing:3px;margin:0">' + randomPassword + '</p>' +
               '</div>' +
               '<div style="text-align:center;margin:20px 0">' +
-              '<a href="https://app.smartvan.pk/auth/login" style="background:#FFB800;color:#1B2B6B;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Login to Admin Panel →</a>' +
+              '<a href="https://app.smartvan.pk/auth/login" style="background:#FFB800;color:#1B3B69;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Login to Admin Panel →</a>' +
               '</div>' +
               '<p style="color:#6b7280;font-size:13px;line-height:1.7">Please change your password after first login. If you need any help, reply to this email or WhatsApp us.</p>' +
               '<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">' +

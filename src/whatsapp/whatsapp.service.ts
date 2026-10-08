@@ -230,7 +230,7 @@ export class WhatsappService {
 
   async sendAttendanceReport(to: string, parentName: string, studentName: string, present: number, absent: number, total: number): Promise<any> {
     const rate = total > 0 ? Math.round((present / total) * 100) : 0;
-    const message = `📋 *Monthly Attendance Report*\n\nDear ${parentName},\n\nHere is the attendance summary for *${studentName}*:\n\n✅ Present: *${present} days*\n❌ Absent: *${absent} days*\n📊 Attendance Rate: *${rate}%*\n\n_SmartVan - Safe Ride, Every Side_ 🚐`;
+    const message = `📋 *Monthly Attendance Report*\n\nDear ${parentName},\n\nHere is the attendance summary for *${studentName}*:\n\n✅ Present: *${present} days*\n❌ Absent: *${absent} days*\n📊 Attendance Rate: *${rate}%*\n\n_SmartVan - Track the Van. Stay Informed._ 🚐`;
     return this.sendTextMessage(to, message);
   }
 }
