@@ -262,7 +262,18 @@ async getAllParents(
     // service call
     return this.adminService.getKids(adminId, query);
 
-  
+
+  }
+
+  // Full, unpaginated roster for the printable register report — a school
+  // admin generating this wants every student in one shot, not a page at a
+  // time.
+  @UseGuards(AuthGuard('jwt'))
+  @Get('getStudentRegisterReport')
+  async getStudentRegisterReport(@Req() req: any) {
+    this.requireStudentsPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
+    return this.adminService.getStudentRegisterReport(adminId);
   }
 
   @UseGuards(AuthGuard('jwt'))
