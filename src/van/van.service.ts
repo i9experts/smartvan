@@ -988,9 +988,61 @@ async uploadDocument(body: any, driverId: string) {
   // Step 3: Save changes
   await driver.save();
 
+  // Only the document fields — this used to return the whole driver
+  // document, including the password hash.
   return {
     message: 'Driver documents uploaded successfully',
-    data: driver,
+    data: this.driverDocumentsView(driver),
+  };
+}
+
+private driverDocumentsView(driver: any) {
+  return {
+    _id: driver._id,
+    licenceImageFront: driver.licenceImageFront ?? null,
+    licenceImageBack: driver.licenceImageBack ?? null,
+    vehicleCardImageFront: driver.vehicleCardImageFront ?? null,
+    vehicleCardImageBack: driver.vehicleCardImageBack ?? null,
+    expiryDateLicense: driver.expiryDateLicense ?? null,
+    expiryDateVehicleCard: driver.expiryDateVehicleCard ?? null,
+  };
+}
+
+/**
+ * Removes one of the driver's documents.
+ * Body { document: 'licence' | 'vehicleCard', side?: 'front' | 'back' | 'both' }
+ * (default both). Removing both sides also clears that document's expiry.
+ */
+async removeDocument(body: any, driverId: string) {
+  if (!driverId) {
+    throw new UnauthorizedException('Invalid driver token');
+  }
+  const document = body?.document;
+  const side = body?.side ?? 'both';
+  if (document !== 'licence' && document !== 'vehicleCard') {
+    throw new BadRequestException({ success: false, code: 'INVALID_DOCUMENT', message: "document must be 'licence' or 'vehicleCard'" });
+  }
+  if (side !== 'front' && side !== 'back' && side !== 'both') {
+    throw new BadRequestException({ success: false, code: 'INVALID_SIDE', message: "side must be 'front', 'back' or 'both'" });
+  }
+
+  const driver: any = await this.databaseService.repositories.driverModel.findById(new Types.ObjectId(driverId));
+  if (!driver) {
+    throw new BadRequestException('Driver not found');
+  }
+
+  const prefix = document === 'licence' ? 'licenceImage' : 'vehicleCardImage';
+  if (side === 'front' || side === 'both') driver[`${prefix}Front`] = undefined;
+  if (side === 'back' || side === 'both') driver[`${prefix}Back`] = undefined;
+  if (side === 'both') {
+    if (document === 'licence') driver.expiryDateLicense = undefined;
+    else driver.expiryDateVehicleCard = undefined;
+  }
+  await driver.save();
+
+  return {
+    message: 'Document removed',
+    data: this.driverDocumentsView(driver),
   };
 }
 
@@ -1005,7 +1057,7 @@ async getDriverDocuments(driverId: string) {
   // Step 1: Driver find karo
   const driver = await this.databaseService.repositories.driverModel.findById(
     new Types.ObjectId(driverId),
-    'licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack' // sirf ye 4 fields lo
+    'licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack expiryDateLicense expiryDateVehicleCard'
   );
 
   if (!driver) {

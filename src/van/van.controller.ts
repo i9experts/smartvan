@@ -325,6 +325,13 @@ async updateVan(
     return this.vanService.uploadDocument(body, driverId);
   }
 
+/** Body { document: 'licence' | 'vehicleCard', side?: 'front' | 'back' | 'both' } */
+@UseGuards(AuthGuard('jwt'))
+@Post('removeDocument')
+async removeDriverDocument(@Body() body: any, @Req() req: any) {
+  return this.vanService.removeDocument(body, req.user?.userId);
+}
+
 @UseGuards(AuthGuard('jwt'))
 @Get('getDriverDocuments')
 async getDriverDocuments(@Req() req: any) {
