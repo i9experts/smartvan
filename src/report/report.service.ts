@@ -419,6 +419,155 @@ const typeFilter = typeof query.type === "string" ? query.type.trim() : "";
     };
   }
 
+  // Full, unpaginated roster of a school's complaints/issues for the
+  // printable register report — reuses getReportsForAdmin's lookup/
+  // projection shape, minus pagination, plus adminRemarks (which the
+  // existing projection omits even though the frontend already expects it).
+  async getComplaintRegisterReport(adminId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+
+    const school = await this.databaseService.repositories.SchoolModel.findOne({
+      admin: adminObjectId,
+    });
+    if (!school) throw new UnauthorizedException("Invalid admin or school not found");
+
+    const matchFilter: any = {
+      schoolId: school._id.toString(),
+      type: { $ne: "adminReport" },
+    };
+
+    const reports = await this.databaseService.repositories.reportModel.aggregate([
+      { $match: matchFilter },
+
+      {
+        $lookup: {
+          from: "drivers",
+          let: { drvId: "$driverId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $ne: ["$$drvId", null] },
+                    { $ne: ["$$drvId", ""] },
+                    { $eq: ["$_id", { $toObjectId: "$$drvId" }] },
+                  ],
+                },
+              },
+            },
+            { $project: { fullname: 1, phoneNo: 1, email: 1 } },
+          ],
+          as: "driver",
+        },
+      },
+      { $unwind: { path: "$driver", preserveNullAndEmptyArrays: true } },
+
+      {
+        $lookup: {
+          from: "vans",
+          let: { drvId: "$driverId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $ne: ["$$drvId", null] },
+                    { $ne: ["$$drvId", ""] },
+                    { $eq: ["$driverId", { $toObjectId: "$$drvId" }] },
+                  ],
+                },
+              },
+            },
+            { $project: { carNumber: 1 } },
+          ],
+          as: "van",
+        },
+      },
+      { $unwind: { path: "$van", preserveNullAndEmptyArrays: true } },
+
+      // Parent lookup
+      {
+        $lookup: {
+          from: "parents",
+          let: { pId: "$parentId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $ne: ["$$pId", null] },
+                    { $ne: ["$$pId", ""] },
+                    { $eq: ["$_id", { $toObjectId: "$$pId" }] },
+                  ],
+                },
+              },
+            },
+            { $project: { fullname: 1, phoneNo: 1, email: 1 } },
+          ],
+          as: "parent",
+        },
+      },
+      { $unwind: { path: "$parent", preserveNullAndEmptyArrays: true } },
+
+      // Kid lookup
+      {
+        $lookup: {
+          from: "kids",
+          let: { kId: "$kidId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $ne: ["$$kId", null] },
+                    { $ne: ["$$kId", ""] },
+                    { $eq: ["$_id", { $toObjectId: "$$kId" }] },
+                  ],
+                },
+              },
+            },
+            { $project: { fullname: 1 } },
+          ],
+          as: "kid",
+        },
+      },
+      { $unwind: { path: "$kid", preserveNullAndEmptyArrays: true } },
+
+      // Final projection
+      {
+        $project: {
+          _id: 1,
+          schoolId: 1,
+          issueType: 1,
+          description: 1,
+          image: 1,
+          audio: 1,
+          video: 1,
+          type: 1,
+          dateOfIncident: 1,
+          status: 1,
+          adminRemarks: 1,
+          createdAt: 1,
+          driverName: "$driver.fullname",
+          driverPhone: "$driver.phoneNo",
+          driverEmail: "$driver.email",
+          vanCarNumber: "$van.carNumber",
+          parentName: { $cond: [{ $ne: ["$type", "driverReport"] }, "$parent.fullname", "$$REMOVE"] },
+          parentPhone: { $cond: [{ $ne: ["$type", "driverReport"] }, "$parent.phoneNo", "$$REMOVE"] },
+          parentEmail: { $cond: [{ $ne: ["$type", "driverReport"] }, "$parent.email", "$$REMOVE"] },
+          kidName: { $cond: [{ $ne: ["$type", "driverReport"] }, "$kid.fullname", "$$REMOVE"] },
+        },
+      },
+
+      { $sort: { createdAt: -1 } },
+    ]);
+
+    return {
+      message: "Complaint register report fetched successfully",
+      data: reports,
+      schoolName: school.schoolName,
+    };
+  }
 
 
 
