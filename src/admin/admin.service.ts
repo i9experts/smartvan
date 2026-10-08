@@ -1341,6 +1341,93 @@ async getKids(AdminId: string, query: any) {
   };
 }
 
+// Full, unpaginated roster for the printable/exportable register report.
+// Joins parent contact info, van assignment, and any routes that list the
+// kid in their kidLocations — a kid can be on separate pick/drop routes.
+async getStudentRegisterReport(AdminId: string) {
+  const adminObjectId = new Types.ObjectId(AdminId);
+
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: adminObjectId,
+  });
+
+  if (!school) {
+    throw new UnauthorizedException("School not found");
+  }
+
+  const kids = await this.databaseService.repositories.KidModel.aggregate([
+    { $match: { schoolId: school._id.toString() } },
+    {
+      $addFields: {
+        vanObjectId: {
+          $cond: {
+            if: { $and: [{ $ne: ["$VanId", null] }, { $ne: ["$VanId", ""] }] },
+            then: { $toObjectId: "$VanId" },
+            else: null,
+          },
+        },
+      },
+    },
+    {
+      $lookup: {
+        from: "parents",
+        localField: "parentId",
+        foreignField: "_id",
+        as: "parent",
+      },
+    },
+    { $unwind: { path: "$parent", preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: "vans",
+        localField: "vanObjectId",
+        foreignField: "_id",
+        as: "van",
+      },
+    },
+    { $unwind: { path: "$van", preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: "routes",
+        let: { kidId: "$_id" },
+        pipeline: [
+          { $match: { $expr: { $in: ["$$kidId", { $ifNull: ["$kidLocations.kidId", []] }] } } },
+          { $project: { _id: 0, title: { $ifNull: ["$title", ""] }, tripType: { $ifNull: ["$tripType", ""] } } },
+        ],
+        as: "routes",
+      },
+    },
+    { $sort: { fullname: 1 } },
+    {
+      $project: {
+        _id: 0,
+        id: { $toString: "$_id" },
+        fullname: { $ifNull: ["$fullname", ""] },
+        image: { $ifNull: ["$image", ""] },
+        age: { $ifNull: ["$age", null] },
+        dob: { $ifNull: ["$dob", null] },
+        grade: { $ifNull: ["$grade", ""] },
+        gender: { $ifNull: ["$gender", ""] },
+        homeAddress: { $ifNull: ["$homeAddress", ""] },
+        createdAt: "$createdAt",
+        van: {
+          assigned: { $cond: [{ $ifNull: ["$van._id", false] }, true, false] },
+          carNumber: { $ifNull: ["$van.carNumber", ""] },
+        },
+        routes: "$routes",
+        parentEmail: { $ifNull: ["$parent.email", ""] },
+        parentPhone: { $ifNull: ["$parent.phoneNo", ""] },
+      },
+    },
+  ]);
+
+  return {
+    message: "Student register report fetched successfully",
+    data: kids,
+    schoolName: school.schoolName,
+  };
+}
+
 async getKidsBySuperAdmin(SuperAdminId: string, query: any) {
   const page = Math.max(1, parseInt(query.page as string, 10) || 1);
   const limit = Math.max(1, parseInt(query.limit as string, 10) || 10);
