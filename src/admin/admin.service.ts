@@ -1090,6 +1090,7 @@ async getAllParentsBySchool(adminId: string, page = 1, limit = 12, search?: stri
         fullname: { $ifNull: ['$fullname', ''] },
         email: { $ifNull: ['$email', ''] },
         phoneNo: { $ifNull: ['$phoneNo', ''] },
+        alternatePhoneNo: { $ifNull: ['$alternatePhoneNo', ''] },
         address: { $ifNull: ['$address', ''] },
         image: { $ifNull: ['$image', ''] },
         createdAt: 1,
