@@ -32,6 +32,12 @@ import {
 
 type CachedEta = { kidId: string; minutes: number; etaTime: string; distanceMeters: number };
 /** tripId → last Distance Matrix result (single-instance cache). */
+/** Start/end of the current day in Asia/Karachi, as UTC Dates. */
+function pktDayBounds(now: Date = new Date()): { start: Date; end: Date } {
+  const start = moment(now).tz(TZ).startOf('day');
+  return { start: start.toDate(), end: start.clone().add(1, 'day').toDate() };
+}
+
 const etaCache = new Map<string, { at: number; eta: CachedEta[] }>();
 const ETA_REFRESH_MS = 60_000;
 import { ScanStudentDto } from './dto/scan-student.dto';
@@ -1102,29 +1108,30 @@ async startTrip(driverId: string, createTripDto: CreateTripDto) {
     throw new BadRequestException('Trip start window expired (1 hour limit)');
   }
 
-  // 5️⃣ Duplicate trip check (same day)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const getTrip = await this.databaseService.repositories.TripModel.findOne({
+  // 5️⃣ One trip per route per day (Asia/Karachi day, not server-local —
+  // the server runs in UTC, so "today" used to start at 05:00 PKT).
+  const { start: dayStart, end: dayEnd } = pktDayBounds();
+  const todaysTrip = await this.databaseService.repositories.TripModel.findOne({
     routeId: createTripDto.routeId,
     type: createTripDto.type,
-    createdAt: {
-      $gte: today,
-      $lt: tomorrow
-    }
-  });
+    createdAt: { $gte: dayStart, $lt: dayEnd },
+  }).sort({ createdAt: -1 });
 
-  // Only block if that trip is still genuinely in progress — once a
-  // driver has ended a trip, they should be able to start a fresh one
-  // for the same route later the same day (e.g. an afternoon run, or
-  // picking back up after ending by mistake), not be permanently
-  // locked out for the rest of the day.
-  if (getTrip && getTrip.status !== 'end') {
-    throw new BadRequestException('This scheduled trip already started today');
+  if (todaysTrip && todaysTrip.status === 'end') {
+    // A route runs once a day. Restarting after it ended created a second
+    // trip, re-notified parents and mixed up attendance.
+    throw new ConflictException({
+      success: false,
+      code: 'TRIP_ALREADY_COMPLETED',
+      message: 'This trip has already been completed today.',
+    });
+  }
+  if (todaysTrip) {
+    throw new ConflictException({
+      success: false,
+      code: 'TRIP_ALREADY_STARTED',
+      message: 'This scheduled trip already started today.',
+    });
   }
 
   // 6️⃣ Create trip

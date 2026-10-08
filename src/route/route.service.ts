@@ -352,10 +352,12 @@ async getAssignedTripByDriver(driverId: string) {
     const startOfDay = new Date(todayDate + 'T00:00:00+05:00'); // start of today (PKT)
     const endOfDay = new Date(todayDate + 'T23:59:59+05:00');   // end of today
 
+    // Latest trip of today for this route (there can be more than one from
+    // before the one-trip-per-day rule).
     const existingTrip = await this.databaseService.repositories.TripModel.findOne({
       routeId: route._id.toString(),
       createdAt: { $gte: startOfDay, $lte: endOfDay },
-    });
+    }).sort({ createdAt: -1 });
 
     console.log("wali",existingTrip)
 
@@ -397,6 +399,14 @@ async getAssignedTripByDriver(driverId: string) {
       // instead (this was the root cause of GPS updates going to a
       // trip the admin dashboard correctly no longer shows as active).
       TripStarted: !!existingTrip && existingTrip.status !== 'end',
+      // Today's state for this route: 'not_started' | 'ongoing' | 'completed'.
+      // A completed route can't be started again today.
+      TripCompleted: !!existingTrip && existingTrip.status === 'end',
+      todayStatus: !existingTrip
+        ? 'not_started'
+        : existingTrip.status === 'end'
+          ? 'completed'
+          : 'ongoing',
       routeTitle: route.title,
       tripType: route.tripType,
       startTime: route.startTime,
