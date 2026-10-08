@@ -1570,6 +1570,15 @@ async getAnalytics(AdminId: string) {
     },
   };
 
+  const resolvedComplaints = reports.filter((r: any) => r.status === 'resolved').length;
+  const pendingComplaints = reports.filter((r: any) => r.status === 'pending').length;
+  const complaintSummary = {
+    total: reports.length,
+    pending: pendingComplaints,
+    resolved: resolvedComplaints,
+    other: reports.length - pendingComplaints - resolvedComplaints,
+  };
+
   // 4. Real week-over-week trends (null when there's nothing to compare
   // against, rather than a hardcoded "+4%").
   const trends = {
@@ -1743,6 +1752,7 @@ async getAnalytics(AdminId: string) {
       seatCapacity,
       studentStatus,
       tripSummary,
+      complaintSummary,
       trends,
       gradeDistribution,
     },
