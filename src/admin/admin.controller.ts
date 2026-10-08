@@ -243,6 +243,26 @@ async getAllParents(
   return this.adminService.getAllParentsBySchool(adminId, pageNumber, limitNumber, search);
 }
 
+@UseGuards(AuthGuard('jwt'))
+@Patch('editParentByAdmin/:parentId')
+async editParentByAdmin(
+  @Req() req: any,
+  @Param('parentId') parentId: string,
+  @Body() editDto: any,
+) {
+  this.requireParentsPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.adminService.editParentByAdmin(adminId, parentId, editDto);
+}
+
+@UseGuards(AuthGuard('jwt'))
+@Get('getParentRegisterReport')
+async getParentRegisterReport(@Req() req: any) {
+  this.requireParentsPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.adminService.getParentRegisterReport(adminId);
+}
+
  @UseGuards(AuthGuard('jwt')) // JWT Auth Guard use
   @Get("Get-Students")
   async getstudent(

@@ -1112,6 +1112,107 @@ async getAllParentsBySchool(adminId: string, page = 1, limit = 12, search?: stri
   };
 }
 
+// Lets a school admin edit one of their own parents' contact details —
+// the Parents page has never had this (parents could previously only be
+// edited by the parent themselves, in their own app). Only the specific
+// contact fields are applied, not the whole DTO — unlike
+// editDriverByAdmin's `$set: editDto`, this never risks an admin-side
+// form accidentally touching password/otp/isVerified/fcmToken just
+// because they're optional fields on the shared EditDriverDto.
+async editParentByAdmin(adminId: string, parentId: string, editDto: any) {
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: new Types.ObjectId(adminId),
+  });
+  if (!school) {
+    throw new UnauthorizedException('School not found');
+  }
+
+  const parent = await this.databaseService.repositories.parentModel.findOne({
+    _id: parentId,
+    schoolId: school._id.toString(),
+  });
+  if (!parent) {
+    throw new BadRequestException('Parent not found in this school');
+  }
+
+  const allowedFields = ['fullname', 'email', 'phoneNo', 'alternatePhoneNo', 'address', 'image'];
+  const updateFields: any = {};
+  for (const field of allowedFields) {
+    if (editDto[field] !== undefined) updateFields[field] = editDto[field];
+  }
+
+  if (updateFields.email && updateFields.email !== parent.email) {
+    const emailTaken = await this.databaseService.repositories.parentModel.findOne({
+      email: updateFields.email,
+      _id: { $ne: parentId },
+    });
+    if (emailTaken) {
+      throw new BadRequestException('Another account is already using this email');
+    }
+  }
+
+  const updatedParent = await this.databaseService.repositories.parentModel.findByIdAndUpdate(
+    parentId,
+    { $set: updateFields },
+    { new: true },
+  );
+
+  return {
+    message: 'Parent updated successfully',
+    data: updatedParent,
+  };
+}
+
+// Full, unpaginated roster for the printable parent register report —
+// same shape/scoping as getAllParentsBySchool, minus pagination.
+async getParentRegisterReport(adminId: string) {
+  const adminObjectId = new Types.ObjectId(adminId);
+
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: adminObjectId,
+  });
+  if (!school) {
+    throw new UnauthorizedException('School not found');
+  }
+
+  const parents = await this.databaseService.repositories.parentModel.aggregate([
+    { $match: { schoolId: school._id.toString() } },
+    { $sort: { fullname: 1 } },
+    {
+      $lookup: {
+        from: 'kids',
+        let: { parentIdStr: { $toString: '$_id' } },
+        pipeline: [
+          { $match: { $expr: { $eq: [{ $toString: '$parentId' }, '$$parentIdStr'] } } },
+          { $project: { fullname: 1, grade: 1, VanId: 1, status: 1 } },
+        ],
+        as: 'kids',
+      },
+    },
+    {
+      $project: {
+        id: { $toString: '$_id' },
+        fullname: { $ifNull: ['$fullname', ''] },
+        email: { $ifNull: ['$email', ''] },
+        phoneNo: { $ifNull: ['$phoneNo', ''] },
+        alternatePhoneNo: { $ifNull: ['$alternatePhoneNo', ''] },
+        address: { $ifNull: ['$address', ''] },
+        image: { $ifNull: ['$image', ''] },
+        createdAt: 1,
+        lastLoginAt: { $ifNull: ['$lastLoginAt', null] },
+        kids: 1,
+        _id: 0,
+      },
+    },
+  ]);
+
+  return {
+    message: 'Parent register report fetched successfully',
+    data: parents,
+    schoolName: (school as any).schoolName,
+  };
+}
+
 async getKids(AdminId: string, query: any) {
   const adminObjectId = new Types.ObjectId(AdminId);
 
