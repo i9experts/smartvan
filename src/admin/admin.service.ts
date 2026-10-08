@@ -14,6 +14,7 @@ import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { BillingService } from 'src/billing/billing.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
 
+import { containsRegex } from 'src/common/regex.util';
 import mongoose from 'mongoose';
 
 
@@ -1129,6 +1130,16 @@ async getKids(AdminId: string, query: any) {
   const kidsName =
     typeof query.kidsName === "string" ? query.kidsName.trim() : "";
 
+  // Free-text search from the admin Students page: student, parent, driver
+  // or van number. (The page sends `search`; this endpoint only understood
+  // `kidsName` before, so the search box did nothing.)
+  const search =
+    typeof query.search === "string" ? query.search.trim().slice(0, 100) : "";
+
+  // Status filter from the same page: 'active' | 'inActive'.
+  const status =
+    query.status === "active" || query.status === "inActive" ? query.status : null;
+
   const parentName =
     typeof query.parentName === "string" ? query.parentName.trim() : "";
 
@@ -1148,11 +1159,8 @@ async getKids(AdminId: string, query: any) {
     {
       $match: {
         schoolId: school._id.toString(),
-        ...(kidsName
-          ? {
-              fullname: { $regex: kidsName, $options: "i" },
-            }
-          : {}),
+        ...(kidsName ? { fullname: containsRegex(kidsName) } : {}),
+        ...(status ? { status } : {}),
       },
     },
 
@@ -1218,29 +1226,34 @@ async getKids(AdminId: string, query: any) {
 
   const andFilters: any[] = [];
 
-  if (parentName) {
+  if (search) {
+    const term = containsRegex(search);
     andFilters.push({
-      "parent.fullname": { $regex: parentName, $options: "i" },
+      $or: [
+        { fullname: term },
+        { "parent.fullname": term },
+        { "parent.phoneNo": term },
+        { "driver.fullname": term },
+        { "van.carNumber": term },
+      ],
     });
+  }
+
+  if (parentName) {
+    andFilters.push({ "parent.fullname": containsRegex(parentName) });
   }
 
   if (driverName) {
-    andFilters.push({
-      "driver.fullname": { $regex: driverName, $options: "i" },
-    });
+    andFilters.push({ "driver.fullname": containsRegex(driverName) });
   }
 
   if (carNumber) {
-    andFilters.push({
-      "van.carNumber": { $regex: carNumber, $options: "i" },
-    });
+    andFilters.push({ "van.carNumber": containsRegex(carNumber) });
   }
 
   // grade filter
   if (grade !== null) {
-    andFilters.push({
-      grade: { $regex: grade, $options: "i" },
-    });
+    andFilters.push({ grade: containsRegex(grade) });
   }
 
   if (andFilters.length) {
