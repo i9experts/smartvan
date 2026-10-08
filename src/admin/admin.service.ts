@@ -1441,6 +1441,363 @@ async getStudentRegisterReport(AdminId: string) {
   };
 }
 
+// Numbered grades were entered two ways over time — a bare "10" from
+// before the Grade picker existed, and "G10" from the picker itself.
+// Analytics must treat them as one bucket or every numbered grade
+// silently splits into two bars.
+private normalizeGrade(raw: string): string {
+  const grade = (raw || '').trim();
+  if (!grade) return 'Unspecified';
+  if (/^\d+$/.test(grade)) return `G${grade}`;
+  return grade;
+}
+
+// A handful of throwaway-looking domains/local-parts that show up from
+// test data or placeholder accounts, not a real way to reach a parent.
+private looksLikePlaceholderEmail(email: string): boolean {
+  if (!email) return true;
+  const e = email.trim().toLowerCase();
+  if (!e.includes('@')) return true;
+  return /test|example\.com|placeholder|dummy|xxx|noemail|n\/a/.test(e);
+}
+
+// Full analytics for the admin's own school — every number here is
+// computed from the live records fetched below, not hardcoded. Trend
+// percentages are only returned when there's a real previous-period
+// count to compare against; otherwise the field is null and the
+// frontend should hide the trend rather than show a made-up value.
+async getAnalytics(AdminId: string) {
+  const adminObjectId = new Types.ObjectId(AdminId);
+
+  const school = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: adminObjectId,
+  });
+
+  if (!school) {
+    throw new UnauthorizedException('School not found');
+  }
+
+  const schoolIdStr = school._id.toString();
+  // schoolId was written as a raw ObjectId in some code paths and as a
+  // string in others (see admin.service.ts history) — match both so
+  // records never silently drop out of these counts.
+  const schoolIdMatch = { $in: [schoolIdStr, school._id] };
+
+  const [kids, vans, drivers, parents, routes, trips, reports] = await Promise.all([
+    this.databaseService.repositories.KidModel.find({ schoolId: schoolIdMatch }).lean(),
+    this.databaseService.repositories.VanModel.find({ schoolId: schoolIdMatch }).lean(),
+    this.databaseService.repositories.driverModel.find({ schoolId: schoolIdMatch }).lean(),
+    this.databaseService.repositories.parentModel.find({ schoolId: schoolIdMatch }).lean(),
+    this.databaseService.repositories.routeModel.find({ schoolId: schoolIdMatch }).lean(),
+    this.databaseService.repositories.TripModel
+      .find({ schoolId: schoolIdMatch })
+      .select('status createdAt vanId routeId type')
+      .lean(),
+    this.databaseService.repositories.reportModel
+      .find({ schoolId: schoolIdMatch })
+      .select('status createdAt')
+      .lean(),
+  ]);
+
+  const now = new Date();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const last7Start = new Date(now.getTime() - 7 * DAY_MS);
+  const prev7Start = new Date(now.getTime() - 14 * DAY_MS);
+
+  const inLast7 = (d: any) => d && new Date(d) >= last7Start && new Date(d) <= now;
+  const inPrev7 = (d: any) => d && new Date(d) >= prev7Start && new Date(d) < last7Start;
+
+  // Compares the last 7 days against the 7 days before that. Returns
+  // null (not 0, not a fabricated number) when the previous period had
+  // nothing to compare against — a % change against zero is meaningless.
+  function trendVsPreviousWeek(records: any[]) {
+    const current = records.filter((r) => inLast7(r.createdAt)).length;
+    const previous = records.filter((r) => inPrev7(r.createdAt)).length;
+    return {
+      current7Days: current,
+      previous7Days: previous,
+      percentChange: previous > 0 ? Math.round(((current - previous) / previous) * 100) : null,
+    };
+  }
+
+  // ── Section 1: corrected existing metrics ──────────────────────────────
+
+  // 1. Driver Coverage (renamed from "Van Utilization" — driver
+  // assignment, not seat usage) + a separate seat-capacity figure.
+  const vansWithDriver = vans.filter((v: any) => !!v.driverId).length;
+  const driverCoverage = {
+    withDriver: vansWithDriver,
+    withoutDriver: vans.length - vansWithDriver,
+    totalVans: vans.length,
+  };
+  const vansWithCapacity = vans.filter((v: any) => typeof v.venCapacity === 'number' && v.venCapacity > 0);
+  const totalSeatCapacity = vansWithCapacity.reduce((sum: number, v: any) => sum + v.venCapacity, 0);
+  const assignedStudentCount = kids.filter((k: any) => !!k.VanId).length;
+  const seatCapacity = {
+    totalSeatCapacity,
+    vansWithCapacityData: vansWithCapacity.length,
+    vansMissingCapacityData: vans.length - vansWithCapacity.length,
+    assignedStudents: assignedStudentCount,
+    utilizationPercent: totalSeatCapacity > 0 ? Math.round((assignedStudentCount / totalSeatCapacity) * 100) : null,
+  };
+
+  // 2. Students — three separate, orthogonal statuses instead of one
+  // ambiguous line. "Transport requirement" isn't a field this system
+  // actually tracks (every enrolled student is assumed to need the
+  // service), so we report what's real: registration (account) status,
+  // school verification, and van assignment.
+  const activeStudents = kids.filter((k: any) => k.status === 'active');
+  const studentStatus = {
+    total: kids.length,
+    registration: { active: activeStudents.length, inactive: kids.length - activeStudents.length },
+    verification: {
+      verified: kids.filter((k: any) => k.verifiedBySchool === true).length,
+      pending: kids.filter((k: any) => k.verifiedBySchool !== true).length,
+    },
+    assignment: { assigned: assignedStudentCount, unassigned: kids.length - assignedStudentCount },
+  };
+
+  // 3. Trips — all-time and last-7-days reported as clearly separate,
+  // consistently-filtered figures (the old page mixed an all-time total
+  // with a 7-day chart and never said so).
+  const completedTrips = trips.filter((t: any) => t.status === 'end');
+  const ongoingTrips = trips.filter((t: any) => t.status === 'ongoing');
+  const last7DayLabels = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now.getTime() - (6 - i) * DAY_MS);
+    return d.toISOString().split('T')[0];
+  });
+  const dailyTrips = last7DayLabels.map((dateStr) => ({
+    date: dateStr,
+    total: trips.filter((t: any) => t.createdAt && new Date(t.createdAt).toISOString().startsWith(dateStr)).length,
+    completed: trips.filter(
+      (t: any) => t.createdAt && new Date(t.createdAt).toISOString().startsWith(dateStr) && t.status === 'end',
+    ).length,
+  }));
+  const tripsLast7 = trips.filter((t: any) => inLast7(t.createdAt));
+  const tripSummary = {
+    allTime: { total: trips.length, completed: completedTrips.length, ongoing: ongoingTrips.length },
+    last7Days: {
+      total: tripsLast7.length,
+      completed: tripsLast7.filter((t: any) => t.status === 'end').length,
+      daily: dailyTrips,
+    },
+  };
+
+  const resolvedComplaints = reports.filter((r: any) => r.status === 'resolved').length;
+  const pendingComplaints = reports.filter((r: any) => r.status === 'pending').length;
+  const complaintSummary = {
+    total: reports.length,
+    pending: pendingComplaints,
+    resolved: resolvedComplaints,
+    other: reports.length - pendingComplaints - resolvedComplaints,
+  };
+
+  // 4. Real week-over-week trends (null when there's nothing to compare
+  // against, rather than a hardcoded "+4%").
+  const trends = {
+    students: trendVsPreviousWeek(kids),
+    trips: trendVsPreviousWeek(trips),
+    vans: trendVsPreviousWeek(vans),
+    complaints: trendVsPreviousWeek(reports),
+  };
+
+  // 5. Grade distribution, normalized so "10" and "G10" are one bucket.
+  const GRADE_ORDER = ['Pre Nursery', 'Nursery', 'KG', ...Array.from({ length: 12 }, (_, i) => `G${i + 1}`)];
+  const gradeCounts: Record<string, number> = {};
+  kids.forEach((k: any) => {
+    const g = this.normalizeGrade(k.grade);
+    gradeCounts[g] = (gradeCounts[g] ?? 0) + 1;
+  });
+  const gradeDistribution = Object.entries(gradeCounts)
+    .sort(([a], [b]) => {
+      const ia = GRADE_ORDER.indexOf(a);
+      const ib = GRADE_ORDER.indexOf(b);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      if (ia !== -1) return -1;
+      if (ib !== -1) return 1;
+      return a.localeCompare(b);
+    })
+    .map(([grade, count]) => ({ grade, count }));
+
+  // ── Section 2: new insights ─────────────────────────────────────────────
+
+  const parentById = new Map(parents.map((p: any) => [p._id.toString(), p]));
+  const vanById = new Map(vans.map((v: any) => [v._id.toString(), v]));
+  const routeVanIds = new Set(routes.map((r: any) => r.vanId).filter(Boolean));
+  const kidIdsInAnyRoute = new Set<string>();
+  const routesByVanId = new Map<string, any[]>();
+  routes.forEach((r: any) => {
+    (r.kidLocations || []).forEach((kl: any) => kidIdsInAnyRoute.add(kl.kidId?.toString()));
+    if (r.vanId) {
+      if (!routesByVanId.has(r.vanId)) routesByVanId.set(r.vanId, []);
+      routesByVanId.get(r.vanId)!.push(r);
+    }
+  });
+
+  // High priority
+  const studentsAwaitingVan = kids
+    .filter((k: any) => !k.VanId && k.status === 'active')
+    .map((k: any) => ({
+      id: k._id.toString(),
+      fullname: k.fullname || '',
+      grade: this.normalizeGrade(k.grade),
+      createdAt: k.createdAt,
+      parentPhone: parentById.get(k.parentId?.toString())?.phoneNo || '',
+    }));
+
+  const incompleteRouteAssignments = kids
+    .filter((k: any) => !!k.VanId && !kidIdsInAnyRoute.has(k._id.toString()))
+    .map((k: any) => ({
+      id: k._id.toString(),
+      fullname: k.fullname || '',
+      grade: this.normalizeGrade(k.grade),
+      vanCarNumber: vanById.get(k.VanId)?.carNumber || '',
+    }));
+
+  const vansWithoutRoutes = vans
+    .filter((v: any) => v.status === 'active' && !routeVanIds.has(v._id.toString()) && !v.assignRoute)
+    .map((v: any) => ({ id: v._id.toString(), carNumber: v.carNumber || '', vehicleType: v.vehicleType || '' }));
+
+  const activeVansNoDriver = vans
+    .filter((v: any) => v.status === 'active' && !v.driverId)
+    .map((v: any) => ({ id: v._id.toString(), carNumber: v.carNumber || '' }));
+  const vanDriverIds = new Set(vans.map((v: any) => v.driverId?.toString()).filter(Boolean));
+  const activeDriversNoVan = drivers
+    .filter((d: any) => d.status === 'active' && !vanDriverIds.has(d._id.toString()))
+    .map((d: any) => ({ id: d._id.toString(), fullname: d.fullname || '' }));
+
+  const driverLinked = (d: any) => !!d.lastLoginAt || !!d.fcmToken;
+  const driverOnboarding = {
+    linked: drivers.filter(driverLinked).length,
+    neverLinked: drivers.filter((d: any) => !driverLinked(d)).length,
+    neverLinkedList: drivers
+      .filter((d: any) => !driverLinked(d))
+      .map((d: any) => ({ id: d._id.toString(), fullname: d.fullname || '', createdAt: d.createdAt })),
+  };
+
+  const missingParentContact = parents
+    .filter((p: any) => !p.phoneNo || !p.phoneNo.trim())
+    .map((p: any) => ({ id: p._id.toString(), fullname: p.fullname || '', email: p.email || '' }));
+
+  const driverDocGaps = drivers
+    .filter(
+      (d: any) =>
+        !d.licenceImageFront || !d.licenceImageBack || !d.vehicleCardImageFront || !d.vehicleCardImageBack,
+    )
+    .map((d: any) => ({
+      id: d._id.toString(),
+      fullname: d.fullname || '',
+      missingLicence: !d.licenceImageFront || !d.licenceImageBack,
+      missingVehicleCard: !d.vehicleCardImageFront || !d.vehicleCardImageBack,
+    }));
+
+  // Medium priority
+  const vansWithDevice = vans.filter((v: any) => !!v.deviceId).length;
+  const gpsDeviceCoverage = { withDevice: vansWithDevice, withoutDevice: vans.length - vansWithDevice };
+
+  const kidsByVan: Record<string, number> = {};
+  kids.forEach((k: any) => {
+    if (k.VanId) kidsByVan[k.VanId] = (kidsByVan[k.VanId] ?? 0) + 1;
+  });
+  const studentsByVanAndRoute = vans.map((v: any) => {
+    const vanId = v._id.toString();
+    const vanRoutes = routesByVanId.get(vanId) || [];
+    return {
+      vanId,
+      carNumber: v.carNumber || '',
+      studentCount: kidsByVan[vanId] ?? 0,
+      routes: vanRoutes.map((r: any) => ({ title: r.title || '', tripType: r.tripType || '' })),
+    };
+  });
+
+  const parentIdsWithKids = new Set(kids.map((k: any) => k.parentId?.toString()).filter(Boolean));
+  const parentsWithNoChildren = parents
+    .filter((p: any) => !parentIdsWithKids.has(p._id.toString()))
+    .map((p: any) => ({ id: p._id.toString(), fullname: p.fullname || '', email: p.email || '' }));
+  const studentsWithNoParentRecord = kids
+    .filter((k: any) => !parentById.has(k.parentId?.toString()))
+    .map((k: any) => ({ id: k._id.toString(), fullname: k.fullname || '' }));
+  const kidsPerParentCounts: Record<string, number> = {};
+  kids.forEach((k: any) => {
+    const pid = k.parentId?.toString();
+    if (pid) kidsPerParentCounts[pid] = (kidsPerParentCounts[pid] ?? 0) + 1;
+  });
+
+  // Registration activity over the last 8 weeks, and how much of each
+  // week's intake is still unassigned today.
+  const WEEKS = 8;
+  const registrationActivity = Array.from({ length: WEEKS }, (_, i) => {
+    const weekEnd = new Date(now.getTime() - i * 7 * DAY_MS);
+    const weekStart = new Date(weekEnd.getTime() - 7 * DAY_MS);
+    const weekKids = kids.filter((k: any) => k.createdAt && new Date(k.createdAt) >= weekStart && new Date(k.createdAt) < weekEnd);
+    return {
+      weekStart: weekStart.toISOString().split('T')[0],
+      newStudents: weekKids.length,
+      stillUnassigned: weekKids.filter((k: any) => !k.VanId).length,
+    };
+  }).reverse();
+
+  // Data-quality exceptions that would otherwise quietly distort every
+  // chart above.
+  const missingAge = kids.filter((k: any) => k.age == null).map((k: any) => ({ id: k._id.toString(), fullname: k.fullname || '' }));
+  const inconsistentGrade = kids
+    .filter((k: any) => k.grade && !GRADE_ORDER.includes(this.normalizeGrade(k.grade)))
+    .map((k: any) => ({ id: k._id.toString(), fullname: k.fullname || '', grade: k.grade }));
+  const placeholderEmails = parents
+    .filter((p: any) => this.looksLikePlaceholderEmail(p.email))
+    .map((p: any) => ({ id: p._id.toString(), fullname: p.fullname || '', email: p.email || '' }));
+  const duplicateGroups: Record<string, any[]> = {};
+  kids.forEach((k: any) => {
+    const key = `${(k.fullname || '').trim().toLowerCase()}|${k.parentId?.toString() || ''}`;
+    if (!key.startsWith('|')) {
+      if (!duplicateGroups[key]) duplicateGroups[key] = [];
+      duplicateGroups[key].push({ id: k._id.toString(), fullname: k.fullname });
+    }
+  });
+  const possibleDuplicates = Object.values(duplicateGroups).filter((g) => g.length > 1);
+
+  return {
+    message: 'Analytics fetched successfully',
+    schoolName: school.schoolName,
+    generatedAt: now,
+    fixedMetrics: {
+      driverCoverage,
+      seatCapacity,
+      studentStatus,
+      tripSummary,
+      complaintSummary,
+      trends,
+      gradeDistribution,
+    },
+    insights: {
+      studentsAwaitingVan: { count: studentsAwaitingVan.length, list: studentsAwaitingVan },
+      incompleteRouteAssignments: { count: incompleteRouteAssignments.length, list: incompleteRouteAssignments },
+      vansWithoutRoutes: { count: vansWithoutRoutes.length, list: vansWithoutRoutes },
+      driverGaps: {
+        activeVansNoDriver: { count: activeVansNoDriver.length, list: activeVansNoDriver },
+        activeDriversNoVan: { count: activeDriversNoVan.length, list: activeDriversNoVan },
+      },
+      driverOnboarding,
+      missingParentContact: { count: missingParentContact.length, list: missingParentContact },
+      driverDocumentGaps: { count: driverDocGaps.length, list: driverDocGaps },
+      gpsDeviceCoverage,
+      studentsByVanAndRoute,
+      parentStudentLinkage: {
+        parentsWithNoChildren: { count: parentsWithNoChildren.length, list: parentsWithNoChildren },
+        studentsWithNoParentRecord: { count: studentsWithNoParentRecord.length, list: studentsWithNoParentRecord },
+        maxChildrenPerParent: Object.values(kidsPerParentCounts).reduce((m, c) => Math.max(m, c), 0),
+      },
+      registrationActivity,
+      dataQualityExceptions: {
+        missingAge: { count: missingAge.length, list: missingAge },
+        inconsistentGrade: { count: inconsistentGrade.length, list: inconsistentGrade },
+        placeholderEmails: { count: placeholderEmails.length, list: placeholderEmails },
+        possibleDuplicates: { count: possibleDuplicates.length, list: possibleDuplicates },
+      },
+    },
+  };
+}
+
 async getKidsBySuperAdmin(SuperAdminId: string, query: any) {
   const page = Math.max(1, parseInt(query.page as string, 10) || 1);
   const limit = Math.max(1, parseInt(query.limit as string, 10) || 10);

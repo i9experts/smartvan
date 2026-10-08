@@ -277,6 +277,13 @@ async getAllParents(
   }
 
   @UseGuards(AuthGuard('jwt'))
+  @Get('getAnalytics')
+  async getAnalytics(@Req() req: any) {
+    const adminId = await this.resolveEffectiveAdminId(req.user);
+    return this.adminService.getAnalytics(adminId);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
   @Post('removeStudents')
   async removeSchoolFromKids(
     @Req() req: any,
