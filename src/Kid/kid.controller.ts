@@ -63,6 +63,14 @@ export class KidController {
     return this.kidQrService.getCards(req.user, { vanId, schoolId });
   }
 
+  /** Parent: their child's student card (view + PDF in the parent app). */
+  @UseGuards(AuthGuard('jwt'))
+  @Get(':id/card')
+  async getKidCard(@Param('id') id: string, @Req() req: any) {
+    if (req.user?.userType !== 'parent') throw new UnauthorizedException('Only parents can access this API');
+    return this.kidQrService.getCardForParent(id, req.user.userId);
+  }
+
   @UseGuards(AuthGuard('jwt'))
   @Get(':id/qr')
   async getKidQr(@Param('id') id: string, @Req() req: any) {
