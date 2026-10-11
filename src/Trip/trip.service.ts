@@ -601,6 +601,7 @@ async optimizeRoute(driverId: string, dto: OptimizeRouteDto) {
     { fullname: 1 },
   );
   const nameByKidId = new Map(kids.map((k: any) => [k._id.toString(), k.fullname]));
+  const stopByKidId = new Map(kidStops.map((s) => [s.kidId.toString(), s]));
 
   return {
     message: 'Route optimized',
@@ -608,6 +609,8 @@ async optimizeRoute(driverId: string, dto: OptimizeRouteDto) {
       stops: stopOrder.map((kidId, sequence) => ({
         kidId,
         kidName: nameByKidId.get(kidId) || null,
+        lat: stopByKidId.get(kidId)?.lat ?? null,
+        long: stopByKidId.get(kidId)?.long ?? null,
         sequence: sequence + 1,
       })),
       optimizedDistanceMeters: result.optimizedDistanceMeters,
