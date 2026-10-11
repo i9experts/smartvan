@@ -4,6 +4,8 @@ import { KidService } from './kid.service';
 import { KidController } from './kid.controller';
 import { KidQrService } from './kid-qr.service';
 import { FirebaseAdminModule } from 'src/notification/firebase.module';
+import { EventsModule } from 'src/events/events.module';
+import { KidAbsenceService } from './kid-absence.service';
 import { AdminController } from 'src/admin/admin.controller';
 import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
 
@@ -13,9 +15,9 @@ import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
 @Module({
  
   controllers: [KidController],
-  providers: [KidService, KidQrService], 
-  exports: [KidService, KidQrService], 
-  imports: [FirebaseAdminModule, WhatsappModule],
+  providers: [KidService, KidQrService, KidAbsenceService], 
+  exports: [KidService, KidQrService, KidAbsenceService], 
+  imports: [FirebaseAdminModule, WhatsappModule, EventsModule],
 })
 // eslint-disable-next-line prettier/prettier
 export class KidModule {}

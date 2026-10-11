@@ -51,6 +51,48 @@ export class KidQrService {
     throw new Error('Could not generate a unique QR token');
   }
 
+  /** School name + van numbers for printing on cards. */
+  private async cardContext(schoolId: string | undefined, vanIds: string[]) {
+    const repos = this.databaseService.repositories;
+    const school: any = schoolId && Types.ObjectId.isValid(schoolId)
+      ? await repos.SchoolModel.findById(schoolId, { schoolName: 1, contactNumber: 1 }).lean()
+      : null;
+    const ids = [...new Set(vanIds.filter((id) => id && Types.ObjectId.isValid(id)))];
+    const vans: any[] = ids.length
+      ? await repos.VanModel.find({ _id: { $in: ids.map((id) => new Types.ObjectId(id)) } }, { carNumber: 1 }).lean()
+      : [];
+    return {
+      schoolName: school?.schoolName || '',
+      schoolPhone: school?.contactNumber || '',
+      vanNumberById: new Map(vans.map((v: any) => [v._id.toString(), v.carNumber || ''])),
+    };
+  }
+
+  /**
+   * Parent: their own child's card (to view in the app and download as PDF).
+   * Issues a token if the child doesn't have one yet.
+   */
+  async getCardForParent(kidId: string, parentId: string) {
+    if (!Types.ObjectId.isValid(kidId)) throw new NotFoundException('Student not found');
+    const kid: any = await this.databaseService.repositories.KidModel.findById(kidId).select('+qrToken');
+    if (!kid || kid.parentId?.toString() !== parentId) throw new NotFoundException('Student not found');
+    const token = kid.qrToken || (await this.assignNewToken(kid));
+    const ctx = await this.cardContext(kid.schoolId, [kid.VanId]);
+    return {
+      success: true,
+      data: {
+        kidId: kid._id.toString(),
+        fullname: kid.fullname,
+        grade: kid.grade || '',
+        image: kid.image || null,
+        vanNumber: ctx.vanNumberById.get(kid.VanId) || '',
+        schoolName: ctx.schoolName,
+        schoolPhone: ctx.schoolPhone,
+        qrPayload: buildQrPayload(token),
+      },
+    };
+  }
+
   async getQr(kidId: string, user: any) {
     const kid = await this.loadKid(kidId, user);
     const token = kid.qrToken || (await this.assignNewToken(kid));
@@ -99,6 +141,13 @@ export class KidQrService {
         qrPayload: buildQrPayload(token),
       });
     }
-    return { success: true, data: cards, total: cards.length };
+    const ctx = await this.cardContext(schoolId, cards.map((c) => c.vanId));
+    for (const c of cards as any[]) c.vanNumber = ctx.vanNumberById.get(c.vanId) || '';
+    return {
+      success: true,
+      data: cards,
+      total: cards.length,
+      school: { name: ctx.schoolName, phone: ctx.schoolPhone },
+    };
   }
 }

@@ -13,6 +13,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { TransportPayment, TransportPaymentDocument } from './transport-payment.schema';
 import { PaymentCheckout, PaymentCheckoutDocument } from './payment-checkout.schema';
+import { findDriverVanAndKids } from './driver-van-kids';
 import {
   CHECKOUT_TTL_MS,
   isOnlineMethod,
@@ -221,6 +222,12 @@ export class OnlinePaymentsService {
     }
   }
 
+  /** kidId of a payment (used to authorise drivers). */
+  async findPaymentKid(paymentId: string): Promise<{ kidId: string } | null> {
+    if (!Types.ObjectId.isValid(paymentId)) return null;
+    return this.paymentModel.findById(paymentId, { kidId: 1 }).lean() as any;
+  }
+
   // ─── Receipts ──────────────────────────────────────────────────────────
 
   /** Parent (own kid), driver (kid on their van) or school admin/staff/superadmin. */
@@ -235,8 +242,8 @@ export class OnlinePaymentsService {
     if (user?.userType === 'parent') {
       allowed = payment.parentId === user.userId || kid?.parentId?.toString() === user.userId;
     } else if (user?.userType === 'driver') {
-      const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(user.userId) }, { _id: 1 }).lean();
-      allowed = !!van && kid?.VanId === van._id.toString();
+      const { kids } = await findDriverVanAndKids(this.databaseService, user.userId);
+      allowed = kids.some((k: any) => k._id.toString() === payment.kidId);
     } else if (user?.role === 'superadmin') {
       allowed = true;
     } else if (user?.role === 'school_staff') {
@@ -280,11 +287,10 @@ export class OnlinePaymentsService {
       ? month
       : new Date().toISOString().slice(0, 7);
     const repos = this.databaseService.repositories;
-    const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }).lean();
+    const { van, kids } = await findDriverVanAndKids(this.databaseService, driverId);
     if (!van) return { success: true, data: { month: target, students: 0, paid: 0, pending: 0, notGenerated: 0, collectedByYou: 0, collectedOnline: 0, totalPaid: 0, totalPending: 0, currency: 'PKR', byMethod: {} } };
 
-    const kids: any[] = await repos.KidModel.find({ VanId: van._id.toString(), status: 'active' }, { _id: 1 }).lean();
-    const kidIds = kids.map((k) => k._id.toString());
+    const kidIds = kids.map((k: any) => k._id.toString());
     const payments: any[] = await this.paymentModel.find({ kidId: { $in: kidIds }, month: target }).lean();
 
     const byMethod: Record<string, number> = {};

@@ -6,6 +6,7 @@ import * as nodemailer from 'nodemailer';
 import { TransportFee, TransportFeeDocument } from './transport-fee.schema';
 import { TransportPayment, TransportPaymentDocument } from './transport-payment.schema';
 import { DatabaseService } from 'src/database/databaseservice';
+import { findDriverVanAndKids } from './driver-van-kids';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 
 @Injectable()
@@ -438,22 +439,24 @@ export class FeesService {
     const driver = await this.databaseService.repositories.driverModel.findById(driverId).lean() as any;
     if (!driver) throw new NotFoundException('Driver not found');
 
-    const van = await this.databaseService.repositories.VanModel.findOne({ driverId }).lean() as any;
+    const { van, kids } = await findDriverVanAndKids(this.databaseService, driverId);
     if (!van) {
       return { message: 'No van assigned', data: [] };
     }
 
-    const kids = await this.databaseService.repositories.KidModel.find({
-      VanId: van._id.toString(),
-      status: 'active',
-    }).lean();
+    // One query for all payments instead of one per kid. Matched by kid +
+    // month only: on a van shared by several schools the payment belongs to
+    // the kid's school, not the driver's.
+    const payments: any[] = kids.length
+      ? await this.paymentModel.find({
+          kidId: { $in: kids.map((k: any) => k._id.toString()) },
+          month: targetMonth,
+        }).lean()
+      : [];
+    const paymentByKid = new Map(payments.map((p: any) => [p.kidId, p]));
 
-    const data = await Promise.all(kids.map(async (kid: any) => {
-      const payment = await this.paymentModel.findOne({
-        kidId: kid._id.toString(),
-        schoolId: driver.schoolId,
-        month: targetMonth,
-      }).lean() as any;
+    const data = kids.map((kid: any) => {
+      const payment = paymentByKid.get(kid._id.toString());
 
       return {
         kidId: kid._id.toString(),
@@ -466,8 +469,10 @@ export class FeesService {
         amount: payment?.amount ?? null,
         currency: payment?.currency || 'PKR',
         paidAt: payment?.paidAt || null,
+        // Inactive students ride the van but get no monthly fee generated.
+        active: kid.status === 'active',
       };
-    }));
+    });
 
     return { message: 'Driver students payment status fetched', data };
   }
