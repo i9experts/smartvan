@@ -96,6 +96,21 @@ export class User {
 
     @Prop({ default: "inActive" })
   status: string;
+
+  // Two-way trip rating — parents rate their driver, drivers rate parents,
+  // after every completed trip. Sum/count (not a running average) so the
+  // average can be recomputed exactly and cheaply on read.
+  @Prop({ default: 0 })
+  ratingSum: number;
+
+  @Prop({ default: 0 })
+  ratingCount: number;
+
+  // Driver-side: incremented once per completed trip (endTrip/endTripForDrop),
+  // independent of whether either side actually rated. Shown alongside the
+  // driver's rating on the driver app home screen.
+  @Prop({ default: 0 })
+  completedTripCount: number;
 }
 
 

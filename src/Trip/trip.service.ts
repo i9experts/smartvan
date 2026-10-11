@@ -340,6 +340,93 @@ private async notifyForcedEnd(
   }
 }
 
+// Fires once per completed trip (never on a repeat/already-ended call —
+// callers guard that). Bumps the driver's lifetime completed-trip count
+// and nudges everyone on this trip to rate the other side.
+private async handleTripCompletionForRating(trip: any, van: any, driver: any) {
+  try {
+    if (driver?._id) {
+      await this.databaseService.repositories.driverModel.updateOne(
+        { _id: driver._id },
+        { $inc: { completedTripCount: 1 } },
+      );
+    }
+
+    const driverName = driver?.fullname || 'your driver';
+    const tripId = trip._id.toString();
+
+    // Nudge the driver to rate the parent(s) they just drove.
+    if (driver?.fcmToken && driver.notificationToggle === true) {
+      await this.firebaseAdminService.sendToDevice(driver.fcmToken, {
+        notification: {
+          title: 'Rate this trip',
+          body: 'How was your trip? Rate the parent(s) you drove.',
+        },
+        data: { actionType: 'RATE_TRIP', tripId, role: 'driver' },
+      });
+    }
+    if (driver?._id) {
+      await this.databaseService.repositories.notificationModel.create({
+        type: 'driver',
+        infoType: 'Information',
+        driverId: driver._id.toString(),
+        schoolId: van.schoolId,
+        VanId: van._id.toString(),
+        title: 'Rate this trip',
+        message: 'How was your trip? Rate the parent(s) you drove.',
+        actionType: 'RATE_TRIP',
+        status: 'sent',
+        date: new Date(),
+      });
+    }
+
+    // Nudge each unique parent on this trip to rate the driver.
+    const kidIds = trip.kids.map((k: any) => k.kidId);
+    if (!kidIds.length) return;
+
+    const kids = await this.databaseService.repositories.KidModel.find(
+      { _id: { $in: kidIds } },
+      { parentId: 1, schoolId: 1 },
+    );
+    const uniqueParentIds = [
+      ...new Set(kids.filter((k) => k.parentId).map((k) => k.parentId.toString())),
+    ];
+
+    for (const parentId of uniqueParentIds) {
+      const parent = await this.databaseService.repositories.parentModel.findOne({
+        _id: parentId,
+        isDelete: false,
+      });
+      if (!parent) continue;
+
+      const title = 'Rate your driver';
+      const message = `How was your trip with ${driverName}? Tap to rate.`;
+
+      if (parent.fcmToken && parent.notificationToggle === true) {
+        await this.firebaseAdminService.sendToDevice(parent.fcmToken, {
+          notification: { title, body: message },
+          data: { actionType: 'RATE_TRIP', tripId, role: 'parent', rateeUserId: driver?._id?.toString() || '' },
+        });
+      }
+
+      await this.databaseService.repositories.notificationModel.create({
+        type: 'driver',
+        infoType: 'Information',
+        parentId,
+        schoolId: van.schoolId,
+        VanId: van._id.toString(),
+        title,
+        message,
+        actionType: 'RATE_TRIP',
+        status: 'sent',
+        date: new Date(),
+      });
+    }
+  } catch (e) {
+    // Never let the rating nudge break trip completion itself.
+    console.error('[handleTripCompletionForRating] failed:', e);
+  }
+}
 
 
 
@@ -806,6 +893,11 @@ async endTrip(driverId, dto: EndTripDto) {
     throw new BadRequestException("Van does not belong to this trip");
   }
 
+  // Guards the rating hook below against double-counting if this trip was
+  // somehow ended twice (endTrip, unlike endTripForDrop, doesn't reject a
+  // repeat call outright).
+  const wasAlreadyEnded = trip.status === 'end';
+
   // 🛡️ Child-left-behind check (drop trips). Throws 409 unless forced.
   const forcedKids = await this.checkKidsDroppedBeforeEnd(trip, dto);
   const forcedIds = new Set(forcedKids.map(k => k.kidId));
@@ -910,6 +1002,10 @@ async endTrip(driverId, dto: EndTripDto) {
   // ===============================
   // 🔥 END
   // ===============================
+
+  if (!wasAlreadyEnded) {
+    await this.handleTripCompletionForRating(trip, van, driver);
+  }
 
   return {
     message: "Trip ended, notifications sent & saved",
@@ -1236,6 +1332,8 @@ async endTripForDrop(driverId, dto: EndTripDto) {
   if (forcedKids.length) {
     await this.notifyForcedEnd(trip, van, driver, forcedKids, dto.confirmationNote.trim());
   }
+
+  await this.handleTripCompletionForRating(trip, van, driver);
 
   return {
     message: "Drop trip ended successfully",

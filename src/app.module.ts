@@ -32,6 +32,7 @@ import { EmployeeModule } from './employee/employee.module';
 import { SchoolStaffModule } from './school-staff/school-staff.module';
 import { AuditLogModule } from './audit-log/audit-log.module';
 import { SearchModule } from './search/search.module';
+import { RatingModule } from './rating/rating.module';
 import { ContactController } from './admin/contact.controller';
 
 
@@ -69,6 +70,7 @@ import { ContactController } from './admin/contact.controller';
     SchoolStaffModule,
     AuditLogModule,
     SearchModule,
+    RatingModule,
   ],
   controllers: [AppController, ContactController],
   providers: [AppService],
