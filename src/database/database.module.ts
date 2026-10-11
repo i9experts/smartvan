@@ -44,8 +44,8 @@ import { DatabaseService } from './databaseservice'
        { name: schema.VanSchoolLink.name, schema: schema.VanSchoolLinkSchema },
        { name: schema.AuditLog.name, schema: schema.AuditLogSchema },
        { name: schema.PretripChecklist.name, schema: schema.PretripChecklistSchema },
+       { name: schema.Rating.name, schema: schema.RatingSchema },
        { name: schema.KidAbsence.name, schema: schema.KidAbsenceSchema },
-           
     ]),
   ],
   exports: [MongooseModule, DatabaseService],

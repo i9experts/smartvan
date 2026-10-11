@@ -50,6 +50,8 @@ export class DatabaseService {
     private AuditLogModel: Model<schema.AuditLogDocument>,
       @InjectModel(schema.PretripChecklist.name)
     private PretripChecklistModel: Model<schema.PretripChecklistDocument>,
+      @InjectModel(schema.Rating.name)
+    private RatingModel: Model<schema.RatingDocument>,
       @InjectModel(schema.KidAbsence.name)
     private KidAbsenceModel: Model<schema.KidAbsenceDocument>,
      ) {}
@@ -74,6 +76,7 @@ export class DatabaseService {
       vanSchoolLinkModel: this.VanSchoolLinkModel,
       auditLogModel: this.AuditLogModel,
       pretripChecklistModel: this.PretripChecklistModel,
+      ratingModel: this.RatingModel,
       kidAbsenceModel: this.KidAbsenceModel,
         };
   }
