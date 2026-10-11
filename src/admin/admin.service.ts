@@ -1609,7 +1609,7 @@ async getAnalytics(AdminId: string) {
     this.databaseService.repositories.routeModel.find({ schoolId: schoolIdMatch }).lean(),
     this.databaseService.repositories.TripModel
       .find({ schoolId: schoolIdMatch })
-      .select('status createdAt vanId routeId type')
+      .select('status createdAt vanId routeId type routeOptimization')
       .lean(),
     this.databaseService.repositories.reportModel
       .find({ schoolId: schoolIdMatch })
@@ -1710,6 +1710,33 @@ async getAnalytics(AdminId: string) {
     other: reports.length - pendingComplaints - resolvedComplaints,
   };
 
+  // AI route optimization (Trip.routeOptimization, set when a driver taps
+  // "Optimize" on the trip screen) — adoption + real distance/time saved,
+  // aggregated across every trip that was ever optimized. "Saved" here
+  // means the same thing it means to the driver: optimized route vs. the
+  // admin's originally-entered stop order, from two real Directions calls,
+  // not an estimate.
+  const optimizedTrips = trips.filter((t: any) => !!t.routeOptimization?.requestedAt);
+  const totalDistanceSavedMeters = optimizedTrips.reduce(
+    (sum: number, t: any) => sum + (t.routeOptimization.distanceSavedMeters || 0), 0,
+  );
+  const totalDurationSavedSeconds = optimizedTrips.reduce(
+    (sum: number, t: any) => sum + (t.routeOptimization.durationSavedSeconds || 0), 0,
+  );
+  const routeOptimizationSummary = {
+    optimizedTripCount: optimizedTrips.length,
+    totalTripCount: trips.length,
+    adoptionPercent: trips.length > 0 ? Math.round((optimizedTrips.length / trips.length) * 100) : null,
+    totalDistanceSavedKm: Math.round((totalDistanceSavedMeters / 1000) * 10) / 10,
+    totalDurationSavedMinutes: Math.round(totalDurationSavedSeconds / 60),
+    avgDistanceSavedKm: optimizedTrips.length > 0
+      ? Math.round((totalDistanceSavedMeters / optimizedTrips.length / 1000) * 10) / 10
+      : null,
+    avgDurationSavedMinutes: optimizedTrips.length > 0
+      ? Math.round(totalDurationSavedSeconds / optimizedTrips.length / 60)
+      : null,
+  };
+
   // 4. Real week-over-week trends (null when there's nothing to compare
   // against, rather than a hardcoded "+4%").
   const trends = {
@@ -1792,6 +1819,41 @@ async getAnalytics(AdminId: string) {
       .filter((d: any) => !driverLinked(d))
       .map((d: any) => ({ id: d._id.toString(), fullname: d.fullname || '', createdAt: d.createdAt })),
   };
+
+  // Per-driver route-optimization breakdown — Trip has no driverId of its
+  // own, so each optimized trip's driver is resolved via its van.
+  const driverIdByVanId = new Map<string, string>();
+  vans.forEach((v: any) => {
+    const driverId = v.driverId?.toString();
+    if (driverId) driverIdByVanId.set(v._id.toString(), driverId);
+  });
+  const driverById = new Map<string, any>(drivers.map((d: any) => [d._id.toString(), d]));
+  const optimizationByDriver: Record<string, { driverId: string; driverName: string; optimizedTripCount: number; distanceSavedMeters: number; durationSavedSeconds: number }> = {};
+  optimizedTrips.forEach((t: any) => {
+    const driverId = driverIdByVanId.get(t.vanId);
+    if (!driverId) return;
+    if (!optimizationByDriver[driverId]) {
+      optimizationByDriver[driverId] = {
+        driverId,
+        driverName: driverById.get(driverId)?.fullname || 'Unknown driver',
+        optimizedTripCount: 0,
+        distanceSavedMeters: 0,
+        durationSavedSeconds: 0,
+      };
+    }
+    optimizationByDriver[driverId].optimizedTripCount += 1;
+    optimizationByDriver[driverId].distanceSavedMeters += t.routeOptimization.distanceSavedMeters || 0;
+    optimizationByDriver[driverId].durationSavedSeconds += t.routeOptimization.durationSavedSeconds || 0;
+  });
+  const routeOptimizationByDriver = Object.values(optimizationByDriver)
+    .map((d) => ({
+      driverId: d.driverId,
+      driverName: d.driverName,
+      optimizedTripCount: d.optimizedTripCount,
+      distanceSavedKm: Math.round((d.distanceSavedMeters / 1000) * 10) / 10,
+      durationSavedMinutes: Math.round(d.durationSavedSeconds / 60),
+    }))
+    .sort((a, b) => b.optimizedTripCount - a.optimizedTripCount);
 
   const missingParentContact = parents
     .filter((p: any) => !p.phoneNo || !p.phoneNo.trim())
@@ -1886,8 +1948,10 @@ async getAnalytics(AdminId: string) {
       complaintSummary,
       trends,
       gradeDistribution,
+      routeOptimization: routeOptimizationSummary,
     },
     insights: {
+      routeOptimizationByDriver: { count: routeOptimizationByDriver.length, list: routeOptimizationByDriver },
       studentsAwaitingVan: { count: studentsAwaitingVan.length, list: studentsAwaitingVan },
       incompleteRouteAssignments: { count: incompleteRouteAssignments.length, list: incompleteRouteAssignments },
       vansWithoutRoutes: { count: vansWithoutRoutes.length, list: vansWithoutRoutes },
