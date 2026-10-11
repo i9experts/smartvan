@@ -108,6 +108,22 @@ export class Trip {
   // Kid wasn't at the stop and the driver moved on (pick trips)
   @Prop({ type: [{ kidId: String, at: Date, note: String }], default: [] })
   noShows: { kidId: string; at: Date; note?: string }[];
+
+  // Last AI route-optimization result the driver requested for this trip
+  // (driver can re-request, so this just holds the most recent one — see
+  // TripService.optimizeRoute). Kept here, not just returned to the app,
+  // so school-admin analytics can aggregate it later.
+  @Prop({ type: Object })
+  routeOptimization?: {
+    stopOrder: string[]; // kidIds, in the order the optimized route visits them
+    optimizedDistanceMeters: number;
+    optimizedDurationSeconds: number;
+    baselineDistanceMeters: number;
+    baselineDurationSeconds: number;
+    distanceSavedMeters: number;
+    durationSavedSeconds: number;
+    requestedAt: Date;
+  };
 }
 
 export const TripSchema = SchemaFactory.createForClass(Trip);

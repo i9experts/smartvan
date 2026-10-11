@@ -16,6 +16,7 @@ import { DatabaseService } from "src/database/databaseservice";
 import { EtaService } from './eta.service';
 import { GeofenceService, GeofenceZone } from './geofence.service';
 import { EndTripDto } from './dto/tripend.dto';
+import { OptimizeRouteDto } from './dto/optimize-route.dto';
 import { getLocationDto } from './dto/getLocations';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { Kid } from 'src/Kid/kid.schema';
@@ -533,6 +534,94 @@ private async handleTripCompletionForRating(trip: any, van: any, driver: any) {
   }
 }
 
+// Lets a driver ask for an optimized stop order on a trip already in
+// progress. Compares two real Google Directions results (the admin's
+// originally-entered stop order vs. Google's optimize:true reordering) so
+// the distance/time "saved" shown to the driver is a real number, not an
+// estimate. Never blocks the trip itself — this is purely advisory; the
+// driver can ignore it and the trip isn't affected either way.
+async optimizeRoute(driverId: string, dto: OptimizeRouteDto) {
+  const driverObjectId = new Types.ObjectId(driverId);
+
+  const driver = await this.databaseService.repositories.driverModel.findById(driverObjectId);
+  if (!driver) throw new UnauthorizedException('Driver not found');
+
+  const trip = await this.databaseService.repositories.TripModel.findById(dto.tripId);
+  if (!trip) throw new NotFoundException('Trip not found');
+
+  const van = await this.databaseService.repositories.VanModel.findOne({ driverId: driverObjectId });
+  if (!van || trip.vanId !== van._id.toString()) {
+    throw new BadRequestException('This trip does not belong to you');
+  }
+
+  const route: any = await this.databaseService.repositories.routeModel.findById(trip.routeId);
+  if (!route) throw new NotFoundException('Route not found for this trip');
+
+  const kidStops: { kidId: string; lat: number; long: number }[] = route.kidLocations || [];
+  if (kidStops.length < 1) {
+    throw new BadRequestException('This route has no stops to optimize');
+  }
+
+  const origin = dto.lat != null && dto.long != null
+    ? { lat: dto.lat, lng: dto.long }
+    : trip.tripStart?.lat != null && trip.tripStart?.long != null
+      ? { lat: trip.tripStart.lat, lng: trip.tripStart.long }
+      : { lat: route.startPoint?.lat, lng: route.startPoint?.long };
+
+  const destination = route.endPoint?.lat != null && route.endPoint?.long != null
+    ? { lat: route.endPoint.lat, lng: route.endPoint.long }
+    : { lat: kidStops[kidStops.length - 1].lat, lng: kidStops[kidStops.length - 1].long };
+
+  if (origin.lat == null || origin.lng == null) {
+    throw new BadRequestException('No starting location available to optimize from');
+  }
+
+  const waypoints = kidStops.map((s) => ({ lat: s.lat, lng: s.long }));
+
+  const result = await this.etaService.getOptimizedRoute(origin, destination, waypoints);
+
+  const stopOrder = result.optimizedOrder.map((i) => kidStops[i].kidId.toString());
+  const distanceSavedMeters = result.baselineDistanceMeters - result.optimizedDistanceMeters;
+  const durationSavedSeconds = result.baselineDurationSeconds - result.optimizedDurationSeconds;
+
+  trip.routeOptimization = {
+    stopOrder,
+    optimizedDistanceMeters: result.optimizedDistanceMeters,
+    optimizedDurationSeconds: result.optimizedDurationSeconds,
+    baselineDistanceMeters: result.baselineDistanceMeters,
+    baselineDurationSeconds: result.baselineDurationSeconds,
+    distanceSavedMeters,
+    durationSavedSeconds,
+    requestedAt: new Date(),
+  };
+  await trip.save();
+
+  const kids = await this.databaseService.repositories.KidModel.find(
+    { _id: { $in: stopOrder } },
+    { fullname: 1 },
+  );
+  const nameByKidId = new Map(kids.map((k: any) => [k._id.toString(), k.fullname]));
+
+  return {
+    message: 'Route optimized',
+    data: {
+      stops: stopOrder.map((kidId, sequence) => ({
+        kidId,
+        kidName: nameByKidId.get(kidId) || null,
+        sequence: sequence + 1,
+      })),
+      optimizedDistanceMeters: result.optimizedDistanceMeters,
+      optimizedDurationSeconds: result.optimizedDurationSeconds,
+      baselineDistanceMeters: result.baselineDistanceMeters,
+      baselineDurationSeconds: result.baselineDurationSeconds,
+      distanceSavedMeters,
+      durationSavedSeconds,
+      origin,
+      destination,
+      overviewPolyline: result.overviewPolyline,
+    },
+  };
+}
 
 
 // async startTrip(driverId: string, createTripDto: CreateTripDto) {
