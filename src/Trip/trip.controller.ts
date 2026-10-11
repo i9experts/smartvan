@@ -4,6 +4,7 @@ import { TripService } from './trip.service';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { PickStudentDto } from './dto/pick-student.dto';
 import { EndTripDto } from './dto/tripend.dto';
+import { OptimizeRouteDto } from './dto/optimize-route.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { getLocationDto } from './dto/getLocations';
@@ -87,6 +88,14 @@ export class TripController {
   @Post('endTripForDrop')
   async endTripForDrop(@Body() dto: EndTripDto, @Req() req: any) {
     return await this.tripService.endTripForDrop(req.user.userId, dto);
+  }
+
+  // Driver-requested route optimization (advisory — doesn't affect the
+  // trip itself). See TripService.optimizeRoute for how "saved" is computed.
+  @UseGuards(AuthGuard('jwt'))
+  @Post('optimizeRoute')
+  async optimizeRoute(@Body() dto: OptimizeRouteDto, @Req() req: any) {
+    return await this.tripService.optimizeRoute(req.user.userId, dto);
   }
 
   @UseGuards(AuthGuard('jwt'))

@@ -1096,6 +1096,14 @@ async getAllParentsBySchool(adminId: string, page = 1, limit = 12, search?: stri
         image: { $ifNull: ['$image', ''] },
         createdAt: 1,
         kids: 1,
+        avgRating: {
+          $cond: [
+            { $gt: [{ $ifNull: ['$ratingCount', 0] }, 0] },
+            { $round: [{ $divide: [{ $ifNull: ['$ratingSum', 0] }, '$ratingCount'] }, 1] },
+            0,
+          ],
+        },
+        ratingCount: { $ifNull: ['$ratingCount', 0] },
       },
     },
   ];
@@ -1203,6 +1211,14 @@ async getParentRegisterReport(adminId: string) {
         createdAt: 1,
         lastLoginAt: { $ifNull: ['$lastLoginAt', null] },
         kids: 1,
+        avgRating: {
+          $cond: [
+            { $gt: [{ $ifNull: ['$ratingCount', 0] }, 0] },
+            { $round: [{ $divide: [{ $ifNull: ['$ratingSum', 0] }, '$ratingCount'] }, 1] },
+            0,
+          ],
+        },
+        ratingCount: { $ifNull: ['$ratingCount', 0] },
         _id: 0,
       },
     },

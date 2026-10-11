@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
@@ -246,5 +247,46 @@ export class RatingService {
     }
 
     throw new ForbiddenException('Only parents and drivers have pending ratings');
+  }
+
+  // School-admin read of one driver/parent's individual review history
+  // (stars + comment per trip) — the list/register endpoints only expose
+  // the aggregate avgRating, this is for a detail-view "Reviews" section.
+  async getRatingsForUserAsAdmin(adminId: string, targetUserId: string) {
+    const school = await this.databaseService.repositories.SchoolModel.findOne({
+      admin: new Types.ObjectId(adminId),
+    });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const schoolIdStr = school._id.toString();
+
+    const driver = await this.databaseService.repositories.driverModel.findOne({
+      _id: targetUserId,
+    });
+    const parent = driver
+      ? null
+      : await this.databaseService.repositories.parentModel.findOne({ _id: targetUserId });
+
+    const targetUser: any = driver || parent;
+    if (!targetUser) throw new NotFoundException('User not found');
+    if (targetUser.schoolId !== schoolIdStr) {
+      throw new ForbiddenException('This user is not in your school');
+    }
+
+    const ratings = await this.databaseService.repositories.ratingModel
+      .find({ rateeUserId: new Types.ObjectId(targetUserId) })
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    return {
+      message: 'Ratings fetched successfully',
+      data: ratings.map((r: any) => ({
+        stars: r.stars,
+        comment: r.comment,
+        raterRole: r.raterRole,
+        tripId: r.tripId,
+        createdAt: r.createdAt,
+      })),
+    };
   }
 }
