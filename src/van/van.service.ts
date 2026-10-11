@@ -1543,7 +1543,7 @@ async getAllDriversByAdmin(
     .find(query)
     .skip(skip)
     .limit(limit)
-    .select('fullname email phoneNo alternatePhoneNo NIC address status fcmToken image schoolId lastLoginAt isVerified createdAt licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack expiryDateLicense expiryDateVehicleCard')
+    .select('fullname email phoneNo alternatePhoneNo NIC address status fcmToken image schoolId lastLoginAt isVerified createdAt licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack expiryDateLicense expiryDateVehicleCard ratingSum ratingCount completedTripCount')
     .lean();
 
   // 3b️⃣ Look up each driver's assigned van (if any) — driverModel has no
@@ -1562,6 +1562,9 @@ async getAllDriversByAdmin(
     return {
       ...d,
       van: van ? { _id: van._id, carNumber: van.carNumber, vehicleType: van.vehicleType } : null,
+      avgRating: d.ratingCount > 0 ? Math.round((d.ratingSum / d.ratingCount) * 10) / 10 : 0,
+      ratingCount: d.ratingCount || 0,
+      completedTripCount: d.completedTripCount || 0,
     };
   });
 
@@ -1614,7 +1617,8 @@ async getDriverRegisterReport(adminId: string) {
     })
     .select(
       'fullname email phoneNo alternatePhoneNo NIC address status image lastLoginAt createdAt ' +
-        'licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack expiryDateLicense expiryDateVehicleCard',
+        'licenceImageFront licenceImageBack vehicleCardImageFront vehicleCardImageBack expiryDateLicense expiryDateVehicleCard ' +
+        'ratingSum ratingCount completedTripCount',
     )
     .sort({ fullname: 1 })
     .lean();
@@ -1649,6 +1653,9 @@ async getDriverRegisterReport(adminId: string) {
       expiryDateLicense: d.expiryDateLicense || '',
       expiryDateVehicleCard: d.expiryDateVehicleCard || '',
       van: van ? { carNumber: van.carNumber || '', vehicleType: van.vehicleType || '' } : null,
+      avgRating: d.ratingCount > 0 ? Math.round((d.ratingSum / d.ratingCount) * 10) / 10 : 0,
+      ratingCount: d.ratingCount || 0,
+      completedTripCount: d.completedTripCount || 0,
     };
   });
 
