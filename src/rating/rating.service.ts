@@ -174,7 +174,7 @@ export class RatingService {
           return {
             tripId: t._id.toString(),
             type: t.type,
-            endedAt: t.tripEnd?.endTime || t.updatedAt,
+            endedAt: t.tripEnd?.endTime || t.tripStart?.startTime || null,
             driverId: driver?._id?.toString() || null,
             driverName: driver?.fullname || null,
             driverImage: driver?.image || null,
@@ -235,7 +235,7 @@ export class RatingService {
           pending.push({
             tripId: t._id.toString(),
             type: t.type,
-            endedAt: t.tripEnd?.endTime || t.updatedAt,
+            endedAt: t.tripEnd?.endTime || t.tripStart?.startTime || null,
             parentId,
             parentName: parent?.fullname || null,
             parentImage: parent?.image || null,
