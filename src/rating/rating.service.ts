@@ -289,4 +289,76 @@ export class RatingService {
       })),
     };
   }
+
+  /** Paginated, filterable school-wide ratings log for the admin dashboard. */
+  async getAllRatingsForSchool(
+    adminId: string,
+    page: number = 1,
+    limit: number = 10,
+    rateeRole?: 'driver' | 'parent',
+    minStars?: number,
+    startDate?: string,
+    endDate?: string,
+  ) {
+    const school = await this.databaseService.repositories.SchoolModel.findOne({
+      admin: new Types.ObjectId(adminId),
+    });
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const match: any = { schoolId: school._id.toString() };
+    if (rateeRole === 'driver' || rateeRole === 'parent') match.rateeRole = rateeRole;
+    if (minStars) match.stars = { $gte: minStars };
+    if (startDate || endDate) {
+      match.createdAt = {};
+      if (startDate) match.createdAt.$gte = new Date(startDate);
+      if (endDate) match.createdAt.$lte = new Date(endDate + 'T23:59:59.999Z');
+    }
+
+    const skip = (page - 1) * limit;
+    const [ratings, total] = await Promise.all([
+      this.databaseService.repositories.ratingModel
+        .find(match)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      this.databaseService.repositories.ratingModel.countDocuments(match),
+    ]);
+
+    const driverIds = new Set<string>();
+    const parentIds = new Set<string>();
+    ratings.forEach((r: any) => {
+      (r.raterRole === 'driver' ? driverIds : parentIds).add(r.raterUserId.toString());
+      (r.rateeRole === 'driver' ? driverIds : parentIds).add(r.rateeUserId.toString());
+    });
+    const [drivers, parents] = await Promise.all([
+      this.databaseService.repositories.driverModel
+        .find({ _id: { $in: [...driverIds] } }, { fullname: 1 })
+        .lean(),
+      this.databaseService.repositories.parentModel
+        .find({ _id: { $in: [...parentIds] } }, { fullname: 1 })
+        .lean(),
+    ]);
+    const nameById = new Map<string, string>([
+      ...drivers.map((d: any) => [d._id.toString(), d.fullname] as [string, string]),
+      ...parents.map((p: any) => [p._id.toString(), p.fullname] as [string, string]),
+    ]);
+
+    return {
+      message: 'Ratings fetched successfully',
+      data: ratings.map((r: any) => ({
+        id: r._id.toString(),
+        tripId: r.tripId,
+        vanId: r.vanId,
+        stars: r.stars,
+        comment: r.comment,
+        raterRole: r.raterRole,
+        raterName: nameById.get(r.raterUserId.toString()) || null,
+        rateeRole: r.rateeRole,
+        rateeName: nameById.get(r.rateeUserId.toString()) || null,
+        createdAt: r.createdAt,
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
+    };
+  }
 }
