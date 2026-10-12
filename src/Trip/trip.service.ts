@@ -261,6 +261,134 @@ async submitChecklist(driverId: string, dto: SubmitChecklistDto) {
   };
 }
 
+// ─── Pre-trip checklist — admin visibility ───────────────────────────────
+
+private async schoolForAdmin(adminId: string) {
+  const school: any = await this.databaseService.repositories.SchoolModel.findOne({
+    admin: new Types.ObjectId(adminId),
+  }).lean();
+  if (!school) throw new UnauthorizedException('School not found');
+  return school;
+}
+
+/** Paginated, filterable log of submitted pre-trip checklists for a school. */
+async getChecklistLogForAdmin(
+  adminId: string,
+  page: number = 1,
+  limit: number = 10,
+  startDate?: string,
+  endDate?: string,
+  vanId?: string,
+  driverId?: string,
+  status?: 'ok' | 'issues',
+) {
+  const school = await this.schoolForAdmin(adminId);
+  const schoolIdStr = school._id.toString();
+
+  const match: any = { schoolId: schoolIdStr };
+  if (startDate || endDate) {
+    match.date = {};
+    if (startDate) match.date.$gte = startDate;
+    if (endDate) match.date.$lte = endDate;
+  }
+  if (vanId) match.vanId = vanId;
+  if (driverId) match.driverId = driverId;
+  if (status === 'ok') match.allOk = true;
+  if (status === 'issues') match.allOk = false;
+
+  const skip = (page - 1) * limit;
+  const [docs, total] = await Promise.all([
+    this.databaseService.repositories.pretripChecklistModel
+      .find(match)
+      .sort({ date: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    this.databaseService.repositories.pretripChecklistModel.countDocuments(match),
+  ]);
+
+  const vanIds = [...new Set(docs.map((d: any) => d.vanId))];
+  const driverIds = [...new Set(docs.map((d: any) => d.driverId))];
+  const [vans, drivers] = await Promise.all([
+    this.databaseService.repositories.VanModel.find({ _id: { $in: vanIds } }, { carNumber: 1 }).lean(),
+    this.databaseService.repositories.driverModel.find({ _id: { $in: driverIds } }, { fullname: 1 }).lean(),
+  ]);
+  const vanById = new Map(vans.map((v: any) => [v._id.toString(), v]));
+  const driverById = new Map(drivers.map((d: any) => [d._id.toString(), d]));
+  const labelByKey = new Map(checklistItemDefs().map((d) => [d.key, d.label]));
+
+  return {
+    success: true,
+    data: docs.map((d: any) => ({
+      id: d._id.toString(),
+      date: d.date,
+      vanId: d.vanId,
+      carNumber: vanById.get(d.vanId)?.carNumber || null,
+      driverId: d.driverId,
+      driverName: driverById.get(d.driverId)?.fullname || null,
+      allOk: d.allOk,
+      items: (d.items || []).map((i: any) => ({ ...i, label: labelByKey.get(i.key) || i.key })),
+      photoUrl: d.photoUrl || null,
+      submittedAt: d.createdAt,
+    })),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
+  };
+}
+
+/**
+ * Today's compliance at a glance: how many active vans have submitted their
+ * checklist today, and which ones haven't yet — surfaced for safety, not
+ * just reporting.
+ */
+async getChecklistComplianceSummary(adminId: string) {
+  const school = await this.schoolForAdmin(adminId);
+  const schoolIdStr = school._id.toString();
+  const today = checklistDate(TZ);
+
+  const activeVans = await this.databaseService.repositories.VanModel.find(
+    { schoolId: schoolIdStr, status: 'active' },
+    { carNumber: 1, driverId: 1 },
+  ).lean();
+
+  const todaysDocs = await this.databaseService.repositories.pretripChecklistModel
+    .find({ schoolId: schoolIdStr, date: today })
+    .lean();
+  const submittedVanIds = new Set(todaysDocs.map((d: any) => d.vanId));
+  const flaggedToday = todaysDocs.filter((d: any) => !d.allOk);
+
+  const missingVans = activeVans.filter((v: any) => !submittedVanIds.has(v._id.toString()));
+  const driverIds = [...new Set(missingVans.map((v: any) => v.driverId?.toString()).filter(Boolean))];
+  const drivers = await this.databaseService.repositories.driverModel
+    .find({ _id: { $in: driverIds } }, { fullname: 1 })
+    .lean();
+  const driverById = new Map(drivers.map((d: any) => [d._id.toString(), d]));
+  const labelByKey = new Map(checklistItemDefs().map((d) => [d.key, d.label]));
+
+  return {
+    success: true,
+    data: {
+      date: today,
+      activeVanCount: activeVans.length,
+      submittedCount: submittedVanIds.size,
+      pendingCount: missingVans.length,
+      flaggedCount: flaggedToday.length,
+      vansNotSubmitted: missingVans.map((v: any) => ({
+        vanId: v._id.toString(),
+        carNumber: v.carNumber || null,
+        driverId: v.driverId?.toString() || null,
+        driverName: v.driverId ? driverById.get(v.driverId.toString())?.fullname || null : null,
+      })),
+      flaggedChecklists: flaggedToday.map((d: any) => ({
+        vanId: d.vanId,
+        driverId: d.driverId,
+        issues: (d.items || [])
+          .filter((i: any) => !i.ok)
+          .map((i: any) => ({ key: i.key, label: labelByKey.get(i.key) || i.key, note: i.note || null })),
+      })),
+    },
+  };
+}
+
 // ─── QR scan pickup / drop ──────────────────────────────────────────────
 
 /**
@@ -623,6 +751,86 @@ async optimizeRoute(driverId: string, dto: OptimizeRouteDto) {
       destination,
       overviewPolyline: result.overviewPolyline,
     },
+  };
+}
+
+// ─── Route optimization — admin log ──────────────────────────────────────
+
+/** Paginated, filterable log of individual "Optimize Route" events for a school. */
+async getRouteOptimizationLogForAdmin(
+  adminId: string,
+  page: number = 1,
+  limit: number = 10,
+  driverId?: string,
+  startDate?: string,
+  endDate?: string,
+) {
+  const school = await this.schoolForAdmin(adminId);
+  const schoolIdStr = school._id.toString();
+
+  const match: any = { schoolId: schoolIdStr, 'routeOptimization.requestedAt': { $exists: true } };
+  if (startDate || endDate) {
+    match['routeOptimization.requestedAt'] = {
+      ...(match['routeOptimization.requestedAt'] as object),
+      ...(startDate ? { $gte: new Date(startDate) } : {}),
+      ...(endDate ? { $lte: new Date(endDate + 'T23:59:59.999Z') } : {}),
+    };
+  }
+
+  if (driverId) {
+    const vans = await this.databaseService.repositories.VanModel.find(
+      { driverId: new Types.ObjectId(driverId) },
+      { _id: 1 },
+    ).lean();
+    match.vanId = { $in: vans.map((v: any) => v._id.toString()) };
+  }
+
+  const skip = (page - 1) * limit;
+  const [trips, total] = await Promise.all([
+    this.databaseService.repositories.TripModel.find(match)
+      .select('vanId routeId type routeOptimization')
+      .sort({ 'routeOptimization.requestedAt': -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    this.databaseService.repositories.TripModel.countDocuments(match),
+  ]);
+
+  const vanIds = [...new Set(trips.map((t: any) => t.vanId))];
+  const vans = await this.databaseService.repositories.VanModel.find(
+    { _id: { $in: vanIds } },
+    { carNumber: 1, driverId: 1 },
+  ).lean();
+  const vanById = new Map(vans.map((v: any) => [v._id.toString(), v]));
+  const driverIds = [...new Set(vans.map((v: any) => v.driverId?.toString()).filter(Boolean))];
+  const drivers = await this.databaseService.repositories.driverModel
+    .find({ _id: { $in: driverIds } }, { fullname: 1 })
+    .lean();
+  const driverById = new Map(drivers.map((d: any) => [d._id.toString(), d]));
+
+  return {
+    success: true,
+    data: trips.map((t: any) => {
+      const van = vanById.get(t.vanId);
+      const driver = van?.driverId ? driverById.get(van.driverId.toString()) : null;
+      const ro = t.routeOptimization;
+      return {
+        tripId: t._id.toString(),
+        tripType: t.type,
+        vanId: t.vanId,
+        carNumber: van?.carNumber || null,
+        driverId: van?.driverId?.toString() || null,
+        driverName: driver?.fullname || null,
+        requestedAt: ro.requestedAt,
+        baselineDistanceMeters: ro.baselineDistanceMeters,
+        optimizedDistanceMeters: ro.optimizedDistanceMeters,
+        distanceSavedMeters: ro.distanceSavedMeters,
+        baselineDurationSeconds: ro.baselineDurationSeconds,
+        optimizedDurationSeconds: ro.optimizedDurationSeconds,
+        durationSavedSeconds: ro.durationSavedSeconds,
+      };
+    }),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
   };
 }
 

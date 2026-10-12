@@ -25,6 +25,25 @@ export class TripController {
     throw new UnauthorizedException('Insufficient permissions');
   }
 
+  // Same pattern as VanController — school_staff don't have their own
+  // admin account, resolve their school's actual admin so service methods
+  // that expect an adminId work unchanged for them too.
+  private async resolveEffectiveAdminId(user: any): Promise<string> {
+    if (user.role === 'admin') return user.userId;
+    if (user.role === 'school_staff') {
+      const school = await this.databaseService.repositories.SchoolModel.findById(user.schoolId);
+      if (!school) throw new UnauthorizedException('School not found for this staff account');
+      return school.admin.toString();
+    }
+    throw new UnauthorizedException('Invalid role for this action');
+  }
+
+  private requireFleetPermission(user: any) {
+    if (user.role === 'admin') return;
+    if (user.role === 'school_staff' && (user.permissions || []).includes('manage_fleet')) return;
+    throw new UnauthorizedException('Insufficient permissions');
+  }
+
   @UseGuards(AuthGuard('jwt'))
   @Post('startTrip')
   async startTrip(@Body() createTripDto: CreateTripDto, @Req() req: any) {
@@ -55,6 +74,42 @@ export class TripController {
   @Post('checklist')
   async submitChecklist(@Body() dto: SubmitChecklistDto, @Req() req: any) {
     return this.tripService.submitChecklist(req.user.userId, dto);
+  }
+
+  // ─── Pre-trip checklist (admin) ───────────────────────────────────────
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('checklist/forAdmin')
+  async getChecklistLogForAdmin(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('vanId') vanId?: string,
+    @Query('driverId') driverId?: string,
+    @Query('status') status?: 'ok' | 'issues',
+  ) {
+    this.requireFleetPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
+    return this.tripService.getChecklistLogForAdmin(
+      adminId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 10,
+      startDate,
+      endDate,
+      vanId,
+      driverId,
+      status,
+    );
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('checklist/complianceSummary')
+  async getChecklistComplianceSummary(@Req() req: any) {
+    this.requireFleetPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
+    return this.tripService.getChecklistComplianceSummary(adminId);
   }
 
   /** Body { tripId, kidId } — tells the parent the van is at the stop. */
@@ -96,6 +151,30 @@ export class TripController {
   @Post('optimizeRoute')
   async optimizeRoute(@Body() dto: OptimizeRouteDto, @Req() req: any) {
     return await this.tripService.optimizeRoute(req.user.userId, dto);
+  }
+
+  // Admin-facing log of individual optimize-route events (see getAnalytics
+  // for the aggregate view this complements).
+  @UseGuards(AuthGuard('jwt'))
+  @Get('routeOptimization/forAdmin')
+  async getRouteOptimizationLogForAdmin(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('driverId') driverId?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    this.requireFleetPermission(req.user);
+    const adminId = await this.resolveEffectiveAdminId(req.user);
+    return this.tripService.getRouteOptimizationLogForAdmin(
+      adminId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 10,
+      driverId,
+      startDate,
+      endDate,
+    );
   }
 
   @UseGuards(AuthGuard('jwt'))

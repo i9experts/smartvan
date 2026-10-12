@@ -5,6 +5,7 @@ import {
   Get,
   Post,
   Param,
+  Query,
   Req,
   UseGuards,
   ForbiddenException,
@@ -60,5 +61,30 @@ export class RatingController {
   async getRatingsForUser(@Param('userId') userId: string, @Req() req: any) {
     const adminId = await this.resolveEffectiveAdminId(req.user);
     return this.ratingService.getRatingsForUserAsAdmin(adminId, userId);
+  }
+
+  // Admin-only: a browsable, filterable log of every rating in the school
+  // (vs. getRatingsForUser's per-person view).
+  @UseGuards(AuthGuard('jwt'))
+  @Get('getAllRatingsForSchool')
+  async getAllRatingsForSchool(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('rateeRole') rateeRole?: 'driver' | 'parent',
+    @Query('minStars') minStars?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const adminId = await this.resolveEffectiveAdminId(req.user);
+    return this.ratingService.getAllRatingsForSchool(
+      adminId,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 10,
+      rateeRole,
+      minStars ? parseInt(minStars) : undefined,
+      startDate,
+      endDate,
+    );
   }
 }
