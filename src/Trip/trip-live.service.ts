@@ -146,8 +146,13 @@ export class TripLiveService {
 
     let path: { polyline: string; distanceMeters: number; durationSeconds: number; legs: any[] } | null = null;
     const origin = vanPoint || (trip.type === 'drop' ? schoolPoint : remaining[0]) || null;
-    const destination = trip.type === 'drop' ? remaining[remaining.length - 1] || null : schoolPoint;
-    const waypoints = trip.type === 'drop' ? remaining.slice(0, -1) : remaining;
+    // Pick trip ends at school; if the school has no location saved, the line
+    // still goes through the remaining stops and ends at the last one.
+    const pickEnd = schoolPoint || remaining[remaining.length - 1] || null;
+    const destination = trip.type === 'drop' ? remaining[remaining.length - 1] || null : pickEnd;
+    const waypoints = trip.type === 'drop'
+      ? remaining.slice(0, -1)
+      : schoolPoint ? remaining : remaining.slice(0, -1);
 
     if (trip.status === 'ongoing' && origin && destination) {
       // Re-plan only when the remaining stops change or every 90 s.
