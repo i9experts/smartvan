@@ -8,6 +8,7 @@ import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { EtaService } from './eta.service';
 import { GeofenceService } from './geofence.service';
 import { downsample, encodePolyline } from './polyline.util';
+import { isValidPoint, resolveStopPoint } from 'src/route/stop-point.util';
 import { isMoving, nextTrafficState } from './traffic-delay.util';
 
 const TZ = process.env.DEFAULT_TIMEZONE || 'Asia/Karachi';
@@ -81,7 +82,7 @@ export class TripLiveService {
   async routePlan(user: any, tripId: string) {
     const { trip, route } = await this.loadViewableTrip(user, tripId);
     const repos = this.databaseService.repositories;
-    const kidLocations: any[] = (route?.kidLocations || []).filter((kl: any) => kl?.kidId && Number.isFinite(kl.lat) && Number.isFinite(kl.long));
+    const kidLocations: any[] = (route?.kidLocations || []).filter((kl: any) => kl?.kidId);
     const kidIds = kidLocations.map((kl) => kl.kidId.toString());
 
     // Visiting order
@@ -90,7 +91,7 @@ export class TripLiveService {
       : kidIds;
 
     const [kids, absences, school]: any[] = await Promise.all([
-      repos.KidModel.find({ _id: { $in: kidIds.map((id) => new Types.ObjectId(id)) } }, { fullname: 1, image: 1, parentId: 1 }).lean(),
+      repos.KidModel.find({ _id: { $in: kidIds.map((id) => new Types.ObjectId(id)) } }, { fullname: 1, image: 1, parentId: 1, homeLat: 1, homeLng: 1 }).lean(),
       repos.kidAbsenceModel.find({ kidId: { $in: kidIds }, date: todayIn(TZ) }, { kidId: 1, tripType: 1 }).lean(),
       Types.ObjectId.isValid(trip.schoolId) ? repos.SchoolModel.findById(trip.schoolId, { schoolName: 1, lat: 1, long: 1 }).lean() : null,
     ]);
@@ -108,11 +109,17 @@ export class TripLiveService {
     };
 
     const parentId = user?.userType === 'parent' ? user.userId : null;
-    const locById = new Map(kidLocations.map((kl) => [kl.kidId.toString(), kl]));
+    // Stop point = route stop location, or the child's home if the stop was
+    // saved without one. Stops with neither are left off the map.
+    const pointById = new Map<string, { lat: number; lng: number }>();
+    for (const kl of kidLocations) {
+      const pt = resolveStopPoint(kl, kidById.get(kl.kidId.toString()) as any);
+      if (pt) pointById.set(kl.kidId.toString(), pt);
+    }
     const stops = order
-      .filter((id) => locById.has(id))
+      .filter((id) => pointById.has(id))
       .map((id, i) => {
-        const kl = locById.get(id);
+        const pt = pointById.get(id)!;
         const kid: any = kidById.get(id);
         const mine = !parentId || kid?.parentId?.toString() === parentId;
         return {
@@ -121,13 +128,13 @@ export class TripLiveService {
           fullname: mine ? kid?.fullname || 'Student' : `Stop ${i + 1}`,
           image: mine ? kid?.image || null : null,
           mine,
-          lat: kl.lat,
-          lng: kl.long,
+          lat: pt.lat,
+          lng: pt.lng,
           status: statusOf(id),
         };
       });
 
-    const schoolPoint = school && Number.isFinite(school.lat) && Number.isFinite(school.long)
+    const schoolPoint = school && isValidPoint(school.lat, school.long)
       ? { name: school.schoolName || 'School', lat: school.lat, lng: school.long }
       : null;
 
@@ -218,12 +225,20 @@ export class TripLiveService {
       const route: any = Types.ObjectId.isValid(trip.routeId)
         ? await repos.routeModel.findById(trip.routeId, { kidLocations: 1 }).lean()
         : null;
-      nearStop = (route?.kidLocations || []).some(
-        (kl: any) => this.geofenceService.getDistanceMeters(lat, lng, kl.lat, kl.long) <= 150,
-      );
+      const stopKids: any[] = (route?.kidLocations || []).length
+        ? await repos.KidModel.find(
+            { _id: { $in: route.kidLocations.map((kl: any) => kl.kidId) } },
+            { homeLat: 1, homeLng: 1 },
+          ).lean()
+        : [];
+      const homeById = new Map(stopKids.map((k: any) => [k._id.toString(), k]));
+      nearStop = (route?.kidLocations || []).some((kl: any) => {
+        const pt = resolveStopPoint(kl, homeById.get(kl.kidId?.toString()) as any);
+        return !!pt && this.geofenceService.getDistanceMeters(lat, lng, pt.lat, pt.lng) <= 150;
+      });
       if (!nearStop && Types.ObjectId.isValid(trip.schoolId)) {
         const school: any = await repos.SchoolModel.findById(trip.schoolId, { lat: 1, long: 1 }).lean();
-        if (school?.lat && school?.long) {
+        if (school && isValidPoint(school.lat, school.long)) {
           nearStop = this.geofenceService.getDistanceMeters(lat, lng, school.lat, school.long) <= 250;
         }
       }

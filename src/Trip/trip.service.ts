@@ -46,6 +46,7 @@ import { parseQrPayload } from 'src/Kid/kid-qr.util';
 import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
 import { TripLiveService } from './trip-live.service';
+import { resolveStopPoint } from 'src/route/stop-point.util';
 import {
   checklistDate,
   checklistItemDefs,
@@ -2325,12 +2326,15 @@ async generateGraphData(
       const parent: any = kid.parentId
         ? await repos.parentModel.findOne({ _id: kid.parentId, isDelete: false })
         : null;
-      stops.set(kidId, { lat: kl.lat, lng: kl.long, kid, parent });
+      // Route stop location, or the child's home if the stop has none.
+      const pt = resolveStopPoint(kl, kid);
+      if (!pt) continue;
+      stops.set(kidId, { lat: pt.lat, lng: pt.lng, kid, parent });
       zones.push({
         id: 'home_' + kidId,
         name: kid.fullname || 'Student Home',
-        lat: kl.lat,
-        lng: kl.long,
+        lat: pt.lat,
+        lng: pt.lng,
         radiusMeters: 100,
         type: 'home',
         kidId,

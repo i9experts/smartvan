@@ -833,9 +833,17 @@ async editRoute(adminId: string, routeId: string, dto: CreateRouteDto) {
     const alreadyAssigned = route.kidLocations?.find((k: any) => k.kidId?.toString() === kidId);
     if (alreadyAssigned) throw new BadRequestException('Student already assigned to this route');
 
+    // No point picked → use the child's home location instead of 0,0.
+    let stopLat = lat;
+    let stopLong = long;
+    if (!stopLat || !stopLong) {
+      const kid: any = await this.databaseService.repositories.KidModel.findById(kidId, { homeLat: 1, homeLng: 1 }).lean();
+      stopLat = kid?.homeLat || 0;
+      stopLong = kid?.homeLng || 0;
+    }
     await this.databaseService.repositories.routeModel.updateOne(
       { _id: route._id },
-      { $push: { kidLocations: { kidId: new Types.ObjectId(kidId), lat: lat || 0, long: long || 0 } } }
+      { $push: { kidLocations: { kidId: new Types.ObjectId(kidId), lat: stopLat, long: stopLong } } }
     );
 
     if (route.vanId) {
