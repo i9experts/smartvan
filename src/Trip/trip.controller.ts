@@ -10,6 +10,7 @@ import { UseGuards } from '@nestjs/common';
 import { getLocationDto } from './dto/getLocations';
 import { ScanStudentDto } from './dto/scan-student.dto';
 import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
+import { TripLiveService } from './trip-live.service';
 import { DatabaseService } from 'src/database/databaseservice';
 
 @Controller('trips')
@@ -17,7 +18,24 @@ export class TripController {
   constructor(
     private readonly tripService: TripService,
     private readonly databaseService: DatabaseService,
+    private readonly tripLive: TripLiveService,
   ) {}
+
+  // ─── Live map data (driver of the van, parent of a kid on it, school admin/staff) ──
+
+  /** Stops in visiting order with status + road polyline through the remaining stops. */
+  @UseGuards(AuthGuard('jwt'))
+  @Get(':tripId/route-plan')
+  async routePlan(@Param('tripId') tripId: string, @Req() req: any) {
+    return this.tripLive.routePlan(req.user, tripId);
+  }
+
+  /** Path the van has driven so far on this trip (encoded polyline). */
+  @UseGuards(AuthGuard('jwt'))
+  @Get(':tripId/trail')
+  async trail(@Param('tripId') tripId: string, @Req() req: any) {
+    return this.tripLive.trail(req.user, tripId);
+  }
 
   private requireAttendancePermission(user: any) {
     if (user.role === 'admin' || user.role === 'superadmin') return;

@@ -101,6 +101,13 @@ export class Trip {
   @Prop({ type: Date })
   lastOverspeedAlertAt?: Date;
 
+  // Traffic-delay detection (see TripLiveService.checkTraffic)
+  @Prop({ type: Date, default: null })
+  stoppedSince?: Date | null;
+
+  @Prop({ type: Date })
+  trafficAlertAt?: Date;
+
   // Driver pressed "At stop" for a kid (parent was told the van is waiting)
   @Prop({ type: [{ kidId: String, at: Date }], default: [] })
   stopWaits: { kidId: string; at: Date }[];

@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { Client, TravelMode } from '@googlemaps/google-maps-services-js';
+import { joinStepPolylines } from './polyline.util';
 
 // Server-side key for the Distance Matrix API. Use a separate key from the
 // mobile apps, restricted by server IP + Distance Matrix API only.
@@ -154,6 +155,44 @@ export class EtaService {
       if (err instanceof ServiceUnavailableException) throw err;
       console.error('Route optimization failed:', err?.message || err);
       throw new ServiceUnavailableException('Could not optimize this route right now.');
+    }
+  }
+
+  /**
+   * Road-following path origin → waypoints (in the given order) → destination.
+   * Points come from every step's polyline (not the simplified overview), so
+   * the line follows each road and turn. Legs give per-stop ETAs.
+   */
+  async getRoutePath(
+    origin: { lat: number; lng: number },
+    destination: { lat: number; lng: number },
+    waypoints: { lat: number; lng: number }[],
+  ): Promise<{ points: [number, number][]; legs: { distanceMeters: number; durationSeconds: number }[] }> {
+    if (!GOOGLE_API_KEY) {
+      throw new ServiceUnavailableException('Route planning is not configured on the server.');
+    }
+    try {
+      const res = await this.client.directions({
+        params: {
+          origin: `${origin.lat},${origin.lng}`,
+          destination: `${destination.lat},${destination.lng}`,
+          waypoints: waypoints.slice(0, 23).map((w) => `${w.lat},${w.lng}`),
+          mode: TravelMode.driving,
+          key: GOOGLE_API_KEY,
+        },
+      });
+      const route = res.data.routes[0];
+      if (!route) throw new ServiceUnavailableException('No route found for these stops.');
+      const steps: string[] = [];
+      for (const leg of route.legs) for (const step of leg.steps) if (step.polyline?.points) steps.push(step.polyline.points);
+      return {
+        points: joinStepPolylines(steps),
+        legs: route.legs.map((l) => ({ distanceMeters: l.distance?.value || 0, durationSeconds: l.duration?.value || 0 })),
+      };
+    } catch (err) {
+      if (err instanceof ServiceUnavailableException) throw err;
+      console.error('Route path failed:', err?.message || err);
+      throw new ServiceUnavailableException('Could not load the route right now.');
     }
   }
 }

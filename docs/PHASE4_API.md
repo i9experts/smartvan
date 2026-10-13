@@ -42,3 +42,29 @@ Errors (400, with `code`): `TRIP_NOT_FOUND`, `TRIP_NOT_ONGOING`,
 Daily at 08:00 (server time): licence / vehicle card expiring in 30, 15, 7,
 1 days or today → push `DOCUMENT_EXPIRY` `{ field, daysLeft }` to the driver
 and ADMIN alert type `document_expiry`.
+
+## 5. Live tracking (Oct 12)
+
+Socket `updateLocation` (driver → server), every GPS fix (~2–3 s):
+`{ tripId, location: { lat, lng }, speed?: m/s, heading?: degrees }`.
+Relayed to the trip room as `locationUpdated`:
+`{ tripId, location: { lat, lng, long }, speedKmh, heading, moving, at }`
+(no longer written to the DB by the socket; POST /trips/updateLocation keeps the trail).
+
+Parents can now join a trip room when their child is on the trip's route or
+on the trip (not only when `VanId` matches).
+
+- `GET /trips/:tripId/route-plan` (driver / parent / school admin):
+  `{ type, status, van, school, nextStopOrder, stops: [{ order, kidId, fullname, image, mine, lat, lng, status }], plannedPath: { polyline, distanceMeters, durationSeconds, legs } | null }`
+  — stop `status`: `waiting | picked | dropped | absent | no_show`. Order =
+  optimized order if the driver optimized, else the route order. Parents only
+  see their own kids' names (`mine`). `polyline` is a Google-encoded,
+  road-following path from the van through the remaining stops (cached 90 s).
+- `GET /trips/:tripId/trail` → `{ polyline, points, startedAt, lastAt }` —
+  where the van actually drove.
+- Socket `tripStatus` on the trip room after each stored location:
+  `{ status: 'moving' | 'stopped' | 'delayed', stoppedSeconds, at }`.
+- Traffic delay: stopped ≥ `TRAFFIC_STOP_SECONDS` (default 120) away from any
+  stop/school → ADMIN alert type `traffic_delay`, socket `trafficDelayAlert`
+  on `school:<id>`, push `TRAFFIC_DELAY` to affected parents. Max once per
+  10 min per trip.

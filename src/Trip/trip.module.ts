@@ -5,12 +5,13 @@ import { TripController } from './trip.controller';
 import { EtaService } from './eta.service';
 import { GeofenceService } from './geofence.service';
 import { FirebaseAdminModule } from 'src/notification/firebase.module';
+import { TripLiveService } from './trip-live.service';
 import { EventsModule } from 'src/events/events.module';
 
 @Module({
   imports: [FirebaseAdminModule, EventsModule],
   controllers: [TripController],
-  providers: [TripService, EtaService, GeofenceService],
+  providers: [TripService, EtaService, GeofenceService, TripLiveService],
   exports: [TripService, EtaService, GeofenceService],
 })
 export class TripModule {}

@@ -45,6 +45,7 @@ import { ScanStudentDto } from './dto/scan-student.dto';
 import { parseQrPayload } from 'src/Kid/kid-qr.util';
 import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
+import { TripLiveService } from './trip-live.service';
 import {
   checklistDate,
   checklistItemDefs,
@@ -59,6 +60,7 @@ export class TripService {
    private readonly etaService: EtaService,
    private readonly geofenceService: GeofenceService,
    private readonly eventsGateway: EventsGateway,
+   private readonly tripLive: TripLiveService,
   ) {} 
 
 // ─── Absences, waiting at stop, no-shows ────────────────────────────────
@@ -2268,8 +2270,10 @@ async generateGraphData(
     // ── 2. Point, distance, speed ────────────────────────────────────────
     const now = new Date();
     const last = trip.locations[trip.locations.length - 1];
+    let segmentMeters: number | null = null;
     if (last) {
       const seg = this.geofenceService.getDistanceMeters(last.lat, last.long, lat, lng);
+      segmentMeters = seg;
       if (seg <= MAX_SEGMENT_METERS) trip.distanceMeters = (trip.distanceMeters || 0) + seg;
     }
     trip.locations.push({ lat, long: lng, time: now });
@@ -2460,6 +2464,13 @@ async generateGraphData(
     }
 
     await trip.save();
+
+    // ── Traffic delay (stopped ≥ 2 min away from stops) ────────────────
+    try {
+      await this.tripLive.checkTraffic(trip, lat, lng, kmh, segmentMeters);
+    } catch (e) {
+      console.error('[traffic] check failed:', e);
+    }
 
     // ── Overspeed alert to school (max once per 5 min per trip) ──────────
     if (overspeed) {

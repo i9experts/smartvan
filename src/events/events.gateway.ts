@@ -163,82 +163,59 @@ afterInit(server: Server) {
     this.server.to(socket.id).emit('tripStarted', { tripId });
   }
 
+  /**
+   * Live position from the driver app, every GPS fix (~2–3 s). Only
+   * relayed to the trip room — it is NOT written to the database here:
+   * POST /trips/updateLocation already stores the trail (throttled), and
+   * writing every socket fix too doubled the trail and loaded MongoDB.
+   *
+   * Payload in:  { tripId, location: { lat, long|lng }, speed?: m/s, heading?: deg }
+   * Payload out (locationUpdated):
+   *   { tripId, location: { lat, lng, long }, speedKmh, heading, moving, at }
+   */
   @SubscribeMessage('updateLocation')
   async updateLocation(
-    @MessageBody() data: { tripId: string; location: { lat: number; long: number } },
+    @MessageBody() data: { tripId: string; location: { lat: number; long?: number; lng?: number }; speed?: number; heading?: number },
     @ConnectedSocket() socket: any,
   ) {
-    if (socket?.decoded_token?.userType !== 'driver') {
-      return;
-    }
+    if (socket?.decoded_token?.userType !== 'driver') return;
+    const room = String(data?.tripId ?? '').trim();
+    if (!Types.ObjectId.isValid(room)) return;
 
-    const room = String(data.tripId).trim();
-    const before = await this.server.in(room).allSockets();
-    console.log(`[location] will emit to room=${room}, listeners=${before.size}`);
+    const lat = Number(data?.location?.lat);
+    const lng = Number(data?.location?.lng ?? data?.location?.long);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
 
-    if (!socket.rooms.has(room)) {
-      await socket.join(room);
-    }
-
-    const tripObjectId = new Types.ObjectId(room);
-    const trip = await this.databaseService.repositories.TripModel.findById(
-      tripObjectId,
-      { 'locations': { $slice: -1 } }
-    ).lean();
-    const last = trip?.locations?.[0];
-    const current = data.location;
-
-    if (Math.abs(current.lat) > 90 || Math.abs(current.long) > 180) {
-      console.log("❌ Physically impossible coordinates skipped");
-      return;
-    }
-
-    if (last) {
-      const latDiff = Math.abs(last.lat - current.lat);
-      const lngDiff = Math.abs(last.long - current.long);
-      if (latDiff < 0.00005 && lngDiff < 0.00005) {
-        console.log("⚠️ Noise/duplicate skipped");
+    // The trip must belong to this driver's van — checked once per socket.
+    socket.data = socket.data || {};
+    const verified: Set<string> = socket.data.verifiedTrips || (socket.data.verifiedTrips = new Set<string>());
+    if (!verified.has(room)) {
+      const driverId = socket.decoded_token?.userId || socket.decoded_token?.sub;
+      const [trip, van]: any[] = await Promise.all([
+        this.databaseService.repositories.TripModel.findById(room, { vanId: 1, status: 1 }).lean(),
+        this.databaseService.repositories.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }, { _id: 1 }).lean(),
+      ]);
+      if (!trip || !van || trip.vanId !== van._id.toString() || trip.status !== 'ongoing') {
+        socket.emit('error', { msg: 'Not your ongoing trip' });
         return;
       }
+      verified.add(room);
     }
+    if (!socket.rooms.has(room)) await socket.join(room);
 
-    let smoothLocation = current;
-    if (last) {
-      smoothLocation = {
-        lat: last.lat * 0.3 + current.lat * 0.7,
-        long: last.long * 0.3 + current.long * 0.7,
-      };
-    }
-
-    await this.databaseService.repositories.TripModel.findByIdAndUpdate(
-      tripObjectId,
-      {
-        $push: {
-          locations: {
-            lat: smoothLocation.lat,
-            long: smoothLocation.long,
-            time: new Date(),
-          },
-        },
-      },
-      { new: false },
-    );
-
-    const userId =
-      socket?.data?.user?.userId ||
-      socket?.decoded_token?.userId ||
-      socket?.decoded_token?.sub ||
-      'unknown';
+    const speedMs = Number(data?.speed);
+    const speedKmh = Number.isFinite(speedMs) && speedMs >= 0 && speedMs < 70 ? Math.round(speedMs * 3.6) : null;
+    const headingRaw = Number(data?.heading);
+    const heading = Number.isFinite(headingRaw) && headingRaw >= 0 && headingRaw <= 360 ? headingRaw : null;
 
     this.server.to(room).emit('locationUpdated', {
       tripId: room,
-      userId,
-      location: smoothLocation,
+      location: { lat, lng, long: lng },
+      speedKmh,
+      heading,
+      moving: speedKmh === null ? null : speedKmh >= 5,
       at: new Date().toISOString(),
     });
-
-    const after = await this.server.in(room).allSockets();
-    console.log(`[location] emitted to room=${room}, listeners=${after.size}`);
   }
 
   @SubscribeMessage('joinTrip')
@@ -289,11 +266,25 @@ afterInit(server: Server) {
       return;
     }
 
-    // Parent path — unchanged.
-    const kid = await this.databaseService.repositories.KidModel.findOne({
-      parentId: new Types.ObjectId(userId),
-      VanId: trip.vanId,
-    }).lean();
+    // Parent path: one of their kids must ride this trip — by VanId, by
+    // being a stop on the trip's route, or by already being on the trip.
+    // (Only VanId was checked before; kids added to routes without VanId
+    // were rejected, so their parents' live map stayed on "Connecting…".)
+    const repos = this.databaseService.repositories;
+    const parentKids: any[] = await repos.KidModel.find(
+      { parentId: new Types.ObjectId(userId) },
+      { _id: 1, VanId: 1 },
+    ).lean();
+    const parentKidIds = new Set(parentKids.map((k) => k._id.toString()));
+    let kid: any = parentKids.find((k) => k.VanId === trip.vanId) || null;
+    if (!kid && parentKidIds.size) {
+      const full: any = await repos.TripModel.findById(tripId, { routeId: 1, kids: 1 }).lean();
+      if ((full?.kids || []).some((k: any) => parentKidIds.has(k.kidId?.toString()))) kid = true;
+      if (!kid && full?.routeId && Types.ObjectId.isValid(full.routeId)) {
+        const route: any = await repos.routeModel.findById(full.routeId, { kidLocations: 1 }).lean();
+        if ((route?.kidLocations || []).some((kl: any) => parentKidIds.has(kl.kidId?.toString()))) kid = true;
+      }
+    }
 
     if (!kid) {
       console.warn(`Unauthorized joinTrip — parentId: ${userId}, tripId: ${tripId}`);
