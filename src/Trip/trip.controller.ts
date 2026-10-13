@@ -30,6 +30,17 @@ export class TripController {
     return this.tripLive.routePlan(req.user, tripId);
   }
 
+  /**
+   * Driver: points recorded while offline, sent when back online.
+   * Body { points: [{ lat, lng, time (ISO), speed? (m/s) }] } (max 2000).
+   */
+  @UseGuards(AuthGuard('jwt'))
+  @Post(':tripId/locations/batch')
+  async backfillLocations(@Param('tripId') tripId: string, @Body() body: any, @Req() req: any) {
+    if (req.user?.userType !== 'driver') throw new UnauthorizedException('Only drivers can upload locations');
+    return this.tripLive.backfill(req.user.userId, tripId, body);
+  }
+
   /** Path the van has driven so far on this trip (encoded polyline). */
   @UseGuards(AuthGuard('jwt'))
   @Get(':tripId/trail')

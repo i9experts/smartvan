@@ -108,6 +108,14 @@ export class Trip {
   @Prop({ type: Date })
   trafficAlertAt?: Date;
 
+  // Tracking health: last time any location arrived (live or backfilled),
+  // and when 'tracking lost' was raised (cleared when locations resume).
+  @Prop({ type: Date, index: true })
+  lastLocationAt?: Date;
+
+  @Prop({ type: Date, default: null })
+  trackingLostAt?: Date | null;
+
   // Driver pressed "At stop" for a kid (parent was told the van is waiting)
   @Prop({ type: [{ kidId: String, at: Date }], default: [] })
   stopWaits: { kidId: string; at: Date }[];

@@ -2278,6 +2278,9 @@ async generateGraphData(
       if (seg <= MAX_SEGMENT_METERS) trip.distanceMeters = (trip.distanceMeters || 0) + seg;
     }
     trip.locations.push({ lat, long: lng, time: now });
+    trip.lastLocationAt = now;
+    const wasLost = !!trip.trackingLostAt;
+    if (wasLost) trip.trackingLostAt = null;
 
     const kmh = speedKmh(speedMs);
     let overspeed: { speedKmh: number; limitKmh: number } | null = null;
@@ -2468,6 +2471,25 @@ async generateGraphData(
     }
 
     await trip.save();
+
+    // ── Live position via HTTP too ───────────────────────────────────────
+    // The driver's socket relays every fix, but when that socket is down
+    // (bad network, app in background) this keeps the parent map moving.
+    // Parents drop events older than the newest they have (by `at`).
+    this.eventsGateway.emitToRoom(tripId, 'locationUpdated', {
+      tripId,
+      location: { lat, lng, long: lng },
+      speedKmh: kmh,
+      heading: null,
+      moving: kmh === null ? null : kmh >= 5,
+      at: now.toISOString(),
+      source: 'http',
+    });
+    if (wasLost) {
+      this.eventsGateway.emitToSchool(van.schoolId, 'trackingRestored', {
+        tripId, vanId: van._id.toString(), at: now.toISOString(),
+      });
+    }
 
     // ── Traffic delay (stopped ≥ 2 min away from stops) ────────────────
     try {

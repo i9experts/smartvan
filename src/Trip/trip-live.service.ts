@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { Types } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
 import { EventsGateway } from 'src/events/events.gateway';
@@ -10,6 +11,7 @@ import { GeofenceService } from './geofence.service';
 import { downsample, encodePolyline } from './polyline.util';
 import { isValidPoint, resolveStopPoint } from 'src/route/stop-point.util';
 import { isMoving, nextTrafficState } from './traffic-delay.util';
+import { cleanBackfill, trackingLostMinutes } from './tracking-health.util';
 
 const TZ = process.env.DEFAULT_TIMEZONE || 'Asia/Karachi';
 const PLAN_CACHE_MS = 90_000;
@@ -210,6 +212,109 @@ export class TripLiveService {
         lastAt: trip.locations?.[trip.locations.length - 1]?.time || null,
       },
     };
+  }
+
+  // ─── Offline backfill ───────────────────────────────────────────────
+
+  /**
+   * Points the driver app recorded while it had no internet, sent in one go
+   * when it's back online. Merged into the trail in time order so the
+   * parent/admin map shows the full path. No ETA/geofence pushes for these
+   * (they are in the past). Accepted for the ongoing trip, or up to 30 min
+   * after it ended.
+   */
+  async backfill(driverId: string, tripId: string, body: { points?: unknown }) {
+    if (!Types.ObjectId.isValid(tripId)) throw new NotFoundException('Trip not found');
+    const repos = this.databaseService.repositories;
+    const trip: any = await repos.TripModel.findById(tripId, { vanId: 1, status: 1, createdAt: 1, tripStart: 1, tripEnd: 1 }).lean();
+    if (!trip) throw new NotFoundException('Trip not found');
+    const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }, { _id: 1 }).lean();
+    if (!van || van._id.toString() !== trip.vanId) throw new ForbiddenException('This trip does not belong to your van');
+
+    const now = new Date();
+    const endedAt = trip.tripEnd?.endTime ? new Date(trip.tripEnd.endTime) : null;
+    if (trip.status !== 'ongoing' && !(endedAt && now.getTime() - endedAt.getTime() <= 30 * 60_000)) {
+      throw new BadRequestException({ success: false, code: 'TRIP_NOT_ONGOING', message: 'Trip is not in progress' });
+    }
+    const from = new Date(trip.tripStart?.startTime || trip.createdAt);
+    const to = endedAt && endedAt < now ? endedAt : now;
+    const points = cleanBackfill(body?.points, { from: new Date(from.getTime() - 60_000), to: new Date(to.getTime() + 60_000) });
+    if (!points.length) return { success: true, data: { accepted: 0 } };
+
+    const lastTime = points[points.length - 1].time;
+    await repos.TripModel.updateOne(
+      { _id: trip._id },
+      {
+        $push: { locations: { $each: points.map((p) => ({ lat: p.lat, long: p.long, time: p.time })), $sort: { time: 1 } } },
+        $max: { lastLocationAt: lastTime },
+      },
+    );
+    this.eventsGateway.emitToRoom(tripId, 'trailBackfilled', { tripId, points: points.length, at: now.toISOString() });
+    return { success: true, data: { accepted: points.length } };
+  }
+
+  // ─── Tracking lost ──────────────────────────────────────────────────
+
+  /**
+   * Every minute: ongoing trips (started in the last 12 h) with no location
+   * for TRACKING_LOST_MINUTES (default 4) → one ADMIN alert, socket
+   * 'trackingLostAlert' on the school room and tripStatus 'offline' for
+   * parents. Cleared automatically when locations resume.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async checkTrackingLost(now: Date = new Date()) {
+    const repos = this.databaseService.repositories;
+    const cutoff = new Date(now.getTime() - trackingLostMinutes() * 60_000);
+    const since = new Date(now.getTime() - 12 * 60 * 60_000);
+    const trips: any[] = await repos.TripModel.find(
+      {
+        status: 'ongoing',
+        createdAt: { $gte: since, $lt: cutoff },
+        $and: [
+          { $or: [{ trackingLostAt: null }, { trackingLostAt: { $exists: false } }] },
+          { $or: [{ lastLocationAt: { $lt: cutoff } }, { lastLocationAt: { $exists: false } }, { lastLocationAt: null }] },
+        ],
+      },
+      { vanId: 1, schoolId: 1, lastLocationAt: 1, createdAt: 1 },
+    ).limit(200).lean();
+
+    for (const trip of trips) {
+      try {
+        // Claim it first so two instances / overlapping runs alert once.
+        const claimed = await repos.TripModel.updateOne(
+          { _id: trip._id, $or: [{ trackingLostAt: null }, { trackingLostAt: { $exists: false } }] },
+          { $set: { trackingLostAt: now } },
+        );
+        if (!claimed.modifiedCount) continue;
+
+        const lastSeen = trip.lastLocationAt || trip.createdAt;
+        const minutes = Math.max(1, Math.round((now.getTime() - new Date(lastSeen).getTime()) / 60_000));
+        const van: any = Types.ObjectId.isValid(trip.vanId)
+          ? await repos.VanModel.findById(trip.vanId, { carNumber: 1, driverId: 1 }).lean()
+          : null;
+        const driver: any = van?.driverId ? await repos.driverModel.findById(van.driverId, { fullname: 1, phoneNo: 1 }).lean() : null;
+        const driverName = driver?.fullname || 'Driver';
+
+        const alert = await repos.notificationModel.create({
+          type: 'tracking_lost', alertType: 'TRACKING_LOST', recipientType: 'ADMIN', infoType: 'Warning',
+          driverId: van?.driverId?.toString(), schoolId: trip.schoolId, VanId: trip.vanId,
+          title: 'Live tracking lost',
+          message: `No location from ${driverName}${van?.carNumber ? ` (van ${van.carNumber})` : ''} for ${minutes} min during a trip.` +
+            `${driver?.phoneNo ? ` Call: ${driver.phoneNo}` : ''}`,
+          status: 'sent', date: now,
+        });
+        this.eventsGateway.emitToSchool(trip.schoolId, 'trackingLostAlert', {
+          alertId: alert._id.toString(), tripId: trip._id.toString(), driverName,
+          driverPhone: driver?.phoneNo || '', vanNumber: van?.carNumber || '',
+          lastSeenAt: new Date(lastSeen).toISOString(), minutes, at: now.toISOString(),
+        });
+        this.eventsGateway.emitToRoom(trip._id.toString(), 'tripStatus', {
+          tripId: trip._id.toString(), status: 'offline', lastSeenAt: new Date(lastSeen).toISOString(), at: now.toISOString(),
+        });
+      } catch (e) {
+        console.error('[tracking-lost] failed for trip', trip._id?.toString(), e);
+      }
+    }
   }
 
   // ─── Traffic delay ──────────────────────────────────────────────────

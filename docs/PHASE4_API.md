@@ -68,3 +68,20 @@ on the trip (not only when `VanId` matches).
   stop/school → ADMIN alert type `traffic_delay`, socket `trafficDelayAlert`
   on `school:<id>`, push `TRAFFIC_DELAY` to affected parents. Max once per
   10 min per trip.
+
+## 6. Reliable tracking (Oct 13)
+
+- `POST /trips/updateLocation/:tripId` now also emits `locationUpdated`
+  (with `source: 'http'`) to the trip room, so the parent map keeps moving
+  when the driver's socket is down. Parents should ignore events older than
+  the newest `at` they have.
+- `POST /trips/:tripId/locations/batch` (driver) — points recorded offline:
+  `{ points: [{ lat, lng, time: ISO, speed?: m/s }] }`, max 2000, merged into
+  the trail in time order (no ETA/geofence pushes). Accepted while ongoing or
+  up to 30 min after the trip ended. Emits `trailBackfilled { tripId, points }`
+  on the trip room → reload `/trips/:id/trail`.
+- Tracking lost: no location for `TRACKING_LOST_MINUTES` (default 4) on an
+  ongoing trip → ADMIN alert type `tracking_lost` (driver phone in message),
+  socket `trackingLostAlert` on `school:<id>`, and `tripStatus
+  { status: 'offline', lastSeenAt }` on the trip room. When locations resume:
+  `trackingRestored` on the school room and normal `tripStatus` again.
