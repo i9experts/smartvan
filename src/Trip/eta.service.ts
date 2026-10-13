@@ -2,6 +2,9 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { Client, TravelMode } from '@googlemaps/google-maps-services-js';
 import { joinStepPolylines } from './polyline.util';
+import * as moment from 'moment-timezone';
+
+const ETA_TZ = process.env.DEFAULT_TIMEZONE || 'Asia/Karachi';
 
 // Server-side key for the Distance Matrix API. Use a separate key from the
 // mobile apps, restricted by server IP + Distance Matrix API only.
@@ -55,16 +58,16 @@ export class EtaService {
       return destinations.map((dest, i) => {
         const el = elements[i];
         const durationSec = el?.duration?.value || 0;
-        const etaDate = new Date(Date.now() + durationSec * 1000);
-        const hours = etaDate.getHours().toString().padStart(2, '0');
-        const mins = etaDate.getMinutes().toString().padStart(2, '0');
+        // Local (school) time, 12-hour — the server runs in UTC, so
+        // getHours() showed parents e.g. "08:23" for 1:23 PM in Karachi.
+        const etaTime = moment().tz(ETA_TZ).add(durationSec, 'seconds').format('h:mm A');
         return {
           destinationName: dest.name,
           distanceText: el?.distance?.text || 'N/A',
           distanceMeters: el?.distance?.value || 0,
           durationText: el?.duration?.text || 'N/A',
           durationSeconds: durationSec,
-          etaTime: hours + ':' + mins,
+          etaTime,
         };
       });
     } catch (err) {
