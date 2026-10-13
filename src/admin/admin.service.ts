@@ -139,6 +139,17 @@ async editSchoolProfileByAdmin(adminId: string, body: any) {
     const allowedFields = ['schoolName', 'schoolEmail', 'contactPerson', 'contactNumber', 'address', 'branchName', 'startTime', 'endTime', 'maxTripDuration', 'bufferTime', 'currency', 'country', 'timezone', 'schoolImage'];
     const filtered: any = {};
     allowedFields.forEach(f => { if (schoolInfo[f] !== undefined) filtered[f] = schoolInfo[f]; });
+    // School location (map pin) — used for the live map, ETA to school, the
+    // school geofence and traffic alerts. Both or neither, valid range, not 0,0.
+    if (schoolInfo.lat !== undefined || schoolInfo.long !== undefined) {
+      const lat = Number(schoolInfo.lat);
+      const long = Number(schoolInfo.long);
+      const ok = Number.isFinite(lat) && Number.isFinite(long) &&
+        Math.abs(lat) <= 90 && Math.abs(long) <= 180 && !(lat === 0 && long === 0);
+      if (!ok) throw new BadRequestException('Invalid school location');
+      filtered.lat = lat;
+      filtered.long = long;
+    }
     await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: filtered });
   }
   return { message: 'Profile updated successfully' };
