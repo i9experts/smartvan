@@ -5,12 +5,15 @@ import { AlertController } from './alert.controller';
 import { alertService } from './alert.service';
 import { FirebaseAdminModule } from 'src/notification/firebase.module';
 import { EventsModule } from 'src/events/events.module';
+import { MongooseModule } from '@nestjs/mongoose';
+import { AlertSeen, AlertSeenSchema } from './alert-seen.schema';
+import { AdminAlertsUnreadService } from './admin-alerts-unread.service';
 
 @Module({
   
   controllers: [AlertController],
-  providers: [alertService],
+  providers: [alertService, AdminAlertsUnreadService],
   exports: [alertService], // agar kahin aur use karna ho to
-    imports: [FirebaseAdminModule, EventsModule],
+    imports: [FirebaseAdminModule, EventsModule, MongooseModule.forFeature([{ name: AlertSeen.name, schema: AlertSeenSchema }])],
 })
 export class AlertModule {}

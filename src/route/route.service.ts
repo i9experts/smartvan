@@ -6,6 +6,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { Types } from 'mongoose';
 import { CreateRouteDto } from './dto/createRoutedto';
 import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
+import { reverseGeocode } from 'src/common/reverse-geocode';
 import { Trip } from 'src/database/schema';
 
 
@@ -613,6 +614,13 @@ async getAllRoutesByAdmin(adminId: string, query: any) {
     await this.databaseService.repositories.routeModel.aggregate(
       dataPipeline,
     );
+  // Student name + place name on every stop (the admin saw kid id
+  // fragments and raw lat/long).
+  for (const group of routes) {
+    for (const r of group.routes || []) {
+      r.kidLocations = await this.enrichStops(r.id, r.kidLocations);
+    }
+  }
 
   // 🔥 COUNT PIPELINE (UPDATED)
   const countPipeline: any[] = [
@@ -650,6 +658,49 @@ async getAllRoutesByAdmin(adminId: string, query: any) {
 }
 
 
+
+/**
+ * Adds kidName / kidImage / address to route stops. Address = the stop's
+ * saved place name, else the child's home address, else a reverse-geocoded
+ * place that is saved on the stop so Google is called once per stop.
+ */
+private async enrichStops(routeId: string, stops: any[] | undefined) {
+  const list = stops || [];
+  if (!list.length) return list;
+  const repos = this.databaseService.repositories;
+  const kidIds = list.map((s: any) => s.kidId).filter(Boolean);
+  const kids: any[] = await repos.KidModel.find(
+    { _id: { $in: kidIds } },
+    { fullname: 1, image: 1, homeAddress: 1, grade: 1 },
+  ).lean();
+  const kidById = new Map(kids.map((k: any) => [k._id.toString(), k]));
+
+  const out: any[] = [];
+  for (const s of list) {
+    const kid = kidById.get(s.kidId?.toString());
+    let address: string | null = s.address || kid?.homeAddress || null;
+    const hasPoint = Number.isFinite(s.lat) && Number.isFinite(s.long) && !(s.lat === 0 && s.long === 0);
+    if (!address && hasPoint) {
+      address = await reverseGeocode(s.lat, s.long);
+      if (address && routeId && Types.ObjectId.isValid(routeId)) {
+        await repos.routeModel.updateOne(
+          { _id: new Types.ObjectId(routeId) },
+          { $set: { 'kidLocations.$[el].address': address } },
+          { arrayFilters: [{ 'el.kidId': s.kidId }] },
+        ).catch(() => undefined);
+      }
+    }
+    out.push({
+      ...s,
+      kidId: s.kidId?.toString(),
+      kidName: kid?.fullname || null,
+      kidImage: kid?.image || null,
+      grade: kid?.grade || null,
+      address,
+    });
+  }
+  return out;
+}
 
 async getRouteById(adminId: string, routeId: string) {
   const adminObjectId = new Types.ObjectId(adminId);
@@ -701,6 +752,7 @@ async getRouteById(adminId: string, routeId: string) {
     vanId: route.vanId,
     carNumber: van ? van.carNumber : null,
     driverName: driver ? driver.fullname : null,
+    kidLocations: await this.enrichStops(route._id.toString(), ((route as any).toObject?.() ?? route).kidLocations),
     createdAt: (route as any).createdAt,
      updatedAt: (route as any).updatedAt,
   };
@@ -836,14 +888,17 @@ async editRoute(adminId: string, routeId: string, dto: CreateRouteDto) {
     // No point picked → use the child's home location instead of 0,0.
     let stopLat = lat;
     let stopLong = long;
+    const kidHome: any = await this.databaseService.repositories.KidModel.findById(kidId, { homeLat: 1, homeLng: 1, homeAddress: 1 }).lean();
     if (!stopLat || !stopLong) {
-      const kid: any = await this.databaseService.repositories.KidModel.findById(kidId, { homeLat: 1, homeLng: 1 }).lean();
-      stopLat = kid?.homeLat || 0;
-      stopLong = kid?.homeLng || 0;
+      stopLat = kidHome?.homeLat || 0;
+      stopLong = kidHome?.homeLng || 0;
     }
     await this.databaseService.repositories.routeModel.updateOne(
       { _id: route._id },
-      { $push: { kidLocations: { kidId: new Types.ObjectId(kidId), lat: stopLat, long: stopLong } } }
+      { $push: { kidLocations: {
+        kidId: new Types.ObjectId(kidId), lat: stopLat, long: stopLong,
+        ...(kidHome?.homeAddress ? { address: kidHome.homeAddress } : {}),
+      } } }
     );
 
     if (route.vanId) {

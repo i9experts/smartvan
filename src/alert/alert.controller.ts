@@ -20,6 +20,7 @@ import { alertService } from './alert.service';
 import { AddAlertDto } from './dto/addAlertdto';
 import { DriverSosDto } from './dto/driver-sos.dto';
 import { AuthGuard } from '@nestjs/passport';
+import { AdminAlertsUnreadService } from './admin-alerts-unread.service';
 import { UseGuards } from '@nestjs/common';
 
 @Controller('alert')
@@ -27,6 +28,7 @@ export class AlertController {
   constructor(
     private readonly AlertService: alertService,
     private readonly databaseService: DatabaseService,
+    private readonly unreadService: AdminAlertsUnreadService,
   ) {}
 
   private async resolveEffectiveAdminId(user: any): Promise<string> {
@@ -575,6 +577,24 @@ async sendAlertByDriver(@Req() req: any, @Body() body: { message?: string; audio
 async sendSosByDriver(@Req() req: any, @Body() body: DriverSosDto) {
   // The service verifies the caller exists in the drivers collection.
   return this.AlertService.sendSosByDriver(req.user.userId, body);
+}
+
+/** Admin portal badge: school alerts since this user last opened Alerts. */
+@UseGuards(AuthGuard('jwt'))
+@Get('admin/unreadCount')
+async adminUnreadCount(@Req() req: any) {
+  this.requireAlertsPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.unreadService.unreadCount(req.user.userId, adminId);
+}
+
+/** Called when the Alerts page is opened — clears this user's badge. */
+@UseGuards(AuthGuard('jwt'))
+@Post('admin/markSeen')
+async adminMarkSeen(@Req() req: any) {
+  this.requireAlertsPermission(req.user);
+  const adminId = await this.resolveEffectiveAdminId(req.user);
+  return this.unreadService.markSeen(req.user.userId, adminId);
 }
 
 @UseGuards(AuthGuard('jwt'))

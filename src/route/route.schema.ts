@@ -78,11 +78,13 @@ export class Route {
         kidId: { type: Types.ObjectId, ref: 'Kid', required: true },
         lat: { type: Number, required: true },
         long: { type: Number, required: true },
+        // Place name for the stop (from the map picker or reverse geocoding)
+        address: { type: String, required: false },
       },
     ],
     required: false,
   })
-  kidLocations?: { kidId: Types.ObjectId; lat: number; long: number }[];
+  kidLocations?: { kidId: Types.ObjectId; lat: number; long: number; address?: string }[];
 }
 
 export const RouteSchema = SchemaFactory.createForClass(Route);

@@ -52,5 +52,5 @@ export class CreateRouteDto {
   };
 
   @IsOptional()
-  kidLocations?: { kidId: string; lat: number; long: number }[];
+  kidLocations?: { kidId: string; lat: number; long: number; address?: string }[];
 }
