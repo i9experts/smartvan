@@ -6,6 +6,8 @@ import { FeesService } from './fees.service';
 import { DatabaseService } from 'src/database/databaseservice';
 import { findDriverVanAndKids } from './driver-van-kids';
 import { OnlinePaymentsService } from './online-payments.service';
+import { FeatureGuard } from 'src/auth/guard/feature.guard';
+import { RequireFeature } from 'src/auth/decorator/require-feature.decorator';
 
 @Controller('fees')
 export class FeesController {
@@ -132,7 +134,8 @@ export class FeesController {
   }
 
   // Set transport fee for a school/route/van
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Post('set')
   async setFee(@Body() body: any, @Req() req: any) {
     const schoolId = await this.resolveSchoolId(req, body.schoolId);
@@ -140,7 +143,8 @@ export class FeesController {
   }
 
   // Get all fees for a school
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Get('school')
   async getSchoolFees(@Query('schoolId') schoolId: string, @Req() req: any) {
     const resolvedSchoolId = await this.resolveSchoolId(req, schoolId);
@@ -148,7 +152,8 @@ export class FeesController {
   }
 
   // Generate monthly payment records for all kids
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Post('generate-monthly')
   async generateMonthly(@Body() body: { schoolId: string; month?: string }, @Req() req: any) {
     const schoolId = await this.resolveSchoolId(req, body.schoolId);
@@ -186,7 +191,8 @@ export class FeesController {
   }
 
   // Get all payments for a school (admin view)
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Get('payments')
   async getPayments(
     @Query('schoolId') schoolId: string,
@@ -199,7 +205,8 @@ export class FeesController {
   }
 
   // Get unpaid students this month
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Get('unpaid')
   async getUnpaid(
     @Query('schoolId') schoolId: string,
@@ -218,7 +225,8 @@ export class FeesController {
   }
 
   // Send payment reminders to all unpaid parents
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Post('send-reminders')
   async sendReminders(@Body() body: { schoolId: string; month?: string }, @Req() req: any) {
     const schoolId = await this.resolveSchoolId(req, body.schoolId);
@@ -226,7 +234,8 @@ export class FeesController {
   }
 
   // Get fee summary stats for dashboard
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Get('summary')
   async getFeeSummary(@Query('schoolId') schoolId: string, @Query('month') month: string, @Req() req: any) {
     const resolvedSchoolId = await this.resolveSchoolId(req, schoolId);
@@ -234,7 +243,8 @@ export class FeesController {
   }
 
   // Update payment status (overdue etc)
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Post('update-status')
   async updateStatus(@Body() body: { paymentId: string; status: string; schoolId?: string }, @Req() req: any) {
     const schoolId = await this.resolveSchoolId(req, body.schoolId);
@@ -242,7 +252,8 @@ export class FeesController {
   }
 
   // Delete a fee config
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Post('delete-fee')
   async deleteFee(@Body() body: { feeId: string; schoolId?: string }, @Req() req: any) {
     const schoolId = await this.resolveSchoolId(req, body.schoolId);
@@ -250,7 +261,8 @@ export class FeesController {
   }
 
   // Get payments by student
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('fee_management')
   @Get('student-payments')
   async getStudentPayments(@Query('kidId') kidId: string, @Query('schoolId') schoolId: string, @Req() req: any) {
     const resolvedSchoolId = await this.resolveSchoolId(req, schoolId);

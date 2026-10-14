@@ -114,6 +114,32 @@ export class School {
 
   @Prop({ type: Types.ObjectId, ref: 'Admin' })
   admin: Types.ObjectId;
+
+  // ─── Feature tier (Basic vs Premium) ─────────────────────────────────
+  // Orthogonal to currentPlan/subscriptionStatus above, which track the
+  // existing per-van Stripe billing. This controls which product MODULES
+  // the school can use at all, independent of how many vans they pay for.
+  @Prop({ type: String, enum: ['basic', 'premium'], default: 'basic' })
+  featureTier: string;
+
+  // Per-school hand-tuning on top of the tier's defaults — e.g. comping a
+  // Basic school early access to one Premium feature, or (rarely) pulling
+  // a feature a Premium school shouldn't have. See feature-keys.ts for the
+  // canonical registry and effectiveFeatures() for how these combine.
+  @Prop({ type: [String], default: [] })
+  enabledFeatures: string[];
+
+  @Prop({ type: [String], default: [] })
+  disabledFeatures: string[];
+
+  // Separate Stripe subscription from the per-van billing one above — see
+  // billing.service.ts's webhook handler for why these must never be
+  // conflated with subscriptionStatus/currentPlan.
+  @Prop()
+  premiumStripeSubscriptionId: string;
+
+  @Prop({ type: String, enum: ['active', 'inactive', 'payment_failed'], default: 'inactive' })
+  premiumSubscriptionStatus: string;
 }
 
 export const SchoolSchema = SchemaFactory.createForClass(School);

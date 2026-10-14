@@ -49,6 +49,17 @@ export class BillingController {
     return this.billingService.createCheckoutSession(req.user.userId);
   }
 
+  // Separate subscription from the per-van billing above — unlocks the
+  // Premium feature tier (Analytics, AI Route Optimization, Safety
+  // Checklist Compliance, Ratings Log, Complaints & Reports, Fee
+  // Management) rather than paying for van capacity.
+  @UseGuards(AuthGuard('jwt'))
+  @Post('premium/create-checkout')
+  async createPremiumCheckout(@Req() req: any) {
+    this.requireAdmin(req.user);
+    return this.billingService.createPremiumCheckoutSession(req.user.userId);
+  }
+
   @UseGuards(AuthGuard('jwt'))
   @Get('all-schools')
   async getAllSchoolsBilling(@Req() req: any) {

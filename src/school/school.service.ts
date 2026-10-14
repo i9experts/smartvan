@@ -11,6 +11,7 @@ import { SchoolDocument } from './school.schema';
 import { SchoolLead, SchoolLeadDocument } from './school-lead.schema';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
+import { FEATURE_KEYS, FEATURE_KEY_SET, effectiveFeatures } from './feature-keys';
 
 @Injectable()
 export class SchoolService {
@@ -310,5 +311,89 @@ export class SchoolService {
     }
 
     return { message: `School status updated to ${status}`, schoolId: school._id, status: school.status };
+  }
+
+  // ── Feature tier (Basic vs Premium) ───────────────────────────────
+
+  getFeatureRegistry() {
+    return { message: 'Feature registry', data: FEATURE_KEYS };
+  }
+
+  /** A school admin/staff's own effective feature set, for sidebar/paywall rendering. */
+  async getMyFeatures(schoolId: string) {
+    const school: any = await this.databaseService.repositories.SchoolModel.findById(schoolId).lean();
+    if (!school) throw new UnauthorizedException('School not found');
+    return {
+      message: 'Features fetched',
+      data: {
+        featureTier: school.featureTier || 'basic',
+        enabledFeatures: school.enabledFeatures || [],
+        disabledFeatures: school.disabledFeatures || [],
+        effectiveFeatures: [...effectiveFeatures(school)],
+        premiumSubscriptionStatus: school.premiumSubscriptionStatus || 'inactive',
+      },
+    };
+  }
+
+  /** Superadmin: view one school's current tier/overrides alongside the full registry. */
+  async getSchoolFeatureSettings(schoolId: string) {
+    const school: any = await this.databaseService.repositories.SchoolModel.findById(schoolId).lean();
+    if (!school) throw new UnauthorizedException('School not found');
+    return {
+      message: 'Feature settings fetched',
+      data: {
+        schoolId: school._id,
+        schoolName: school.schoolName,
+        featureTier: school.featureTier || 'basic',
+        enabledFeatures: school.enabledFeatures || [],
+        disabledFeatures: school.disabledFeatures || [],
+        effectiveFeatures: [...effectiveFeatures(school)],
+        premiumSubscriptionStatus: school.premiumSubscriptionStatus || 'inactive',
+        registry: FEATURE_KEYS,
+      },
+    };
+  }
+
+  /** Superadmin: set a school's tier and/or per-feature overrides. */
+  async updateSchoolFeatureTier(
+    schoolId: string,
+    body: { featureTier?: string; enabledFeatures?: string[]; disabledFeatures?: string[] },
+    actor?: { userId: string; email: string; role: string },
+  ) {
+    const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
+    if (!school) throw new UnauthorizedException('School not found');
+
+    const update: Record<string, any> = {};
+    if (body.featureTier !== undefined) {
+      if (body.featureTier !== 'basic' && body.featureTier !== 'premium') {
+        throw new BadRequestException("featureTier must be 'basic' or 'premium'");
+      }
+      update.featureTier = body.featureTier;
+    }
+    if (body.enabledFeatures !== undefined) {
+      const invalid = body.enabledFeatures.filter((k) => !FEATURE_KEY_SET.has(k));
+      if (invalid.length) throw new BadRequestException(`Unknown feature key(s): ${invalid.join(', ')}`);
+      update.enabledFeatures = body.enabledFeatures;
+    }
+    if (body.disabledFeatures !== undefined) {
+      const invalid = body.disabledFeatures.filter((k) => !FEATURE_KEY_SET.has(k));
+      if (invalid.length) throw new BadRequestException(`Unknown feature key(s): ${invalid.join(', ')}`);
+      update.disabledFeatures = body.disabledFeatures;
+    }
+
+    Object.assign(school, update);
+    await school.save();
+
+    if (actor) {
+      this.auditLogService.record(
+        'school_feature_tier_updated',
+        actor.userId,
+        actor.email,
+        actor.role,
+        { schoolId: school._id.toString(), schoolName: (school as any).schoolName, ...update },
+      );
+    }
+
+    return this.getSchoolFeatureSettings(schoolId);
   }
 }

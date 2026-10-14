@@ -16,6 +16,8 @@ import {
 import { AdminService } from './admin.service'
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
+import { FeatureGuard } from 'src/auth/guard/feature.guard';
+import { RequireFeature } from 'src/auth/decorator/require-feature.decorator';
 import { AddStudentDto } from './dto/addStudent.dto';
 import { EditStudentDto } from './dto/editStudent.dto';
 import { KidService } from 'src/Kid/kid.service';
@@ -296,7 +298,8 @@ async getParentRegisterReport(@Req() req: any) {
     return this.adminService.getStudentRegisterReport(adminId);
   }
 
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('analytics')
   @Get('getAnalytics')
   async getAnalytics(@Req() req: any) {
     const adminId = await this.resolveEffectiveAdminId(req.user);

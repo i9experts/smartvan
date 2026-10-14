@@ -167,6 +167,7 @@ export class BillingService {
 
     if (lineItems.length === 0) throw new BadRequestException('No active vans found for billing');
 
+    const schoolId = bill.schoolId.toString();
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
@@ -174,13 +175,82 @@ export class BillingService {
       mode: 'subscription',
       success_url: `${process.env.FRONTEND_URL || 'https://app.smartvan.pk'}/billing?success=true`,
       cancel_url: `${process.env.FRONTEND_URL || 'https://app.smartvan.pk'}/billing?cancelled=true`,
-      metadata: {
-        adminId,
-        schoolId: bill.schoolId.toString(),
-      },
+      // type:'van_billing' tags both the session and the resulting
+      // subscription (via subscription_data.metadata) so the webhook can
+      // tell this apart from a Premium feature-tier subscription on the
+      // same Stripe customer — see handleWebhook's resolveSubscriptionType.
+      metadata: { adminId, schoolId, type: 'van_billing' },
+      subscription_data: { metadata: { adminId, schoolId, type: 'van_billing' } },
     });
 
     return { sessionUrl: session.url, sessionId: session.id, bill };
+  }
+
+  // ─── Premium feature tier — separate subscription from van billing ────
+
+  private getPremiumPrice(currency: string): { amount: number; currency: string } {
+    const isUsd = currency.toUpperCase() === 'USD';
+    const raw = isUsd ? process.env.PREMIUM_PLAN_PRICE_USD : process.env.PREMIUM_PLAN_PRICE_PKR;
+    const amount = Number(raw);
+    if (!raw || !Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException(
+        `Premium plan pricing is not configured on the server (set PREMIUM_PLAN_PRICE_${isUsd ? 'USD' : 'PKR'}).`,
+      );
+    }
+    return { amount, currency: isUsd ? 'usd' : 'pkr' };
+  }
+
+  async createPremiumCheckoutSession(adminId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new BadRequestException('School not found');
+
+    const schoolAny = school as any;
+    if (schoolAny.featureTier === 'premium' && schoolAny.premiumSubscriptionStatus === 'active') {
+      throw new BadRequestException('This school already has Premium active.');
+    }
+
+    const { customerId } = await this.createOrGetCustomer(adminId);
+    const schoolId = school._id.toString();
+    const price = this.getPremiumPrice(schoolAny.currency || 'PKR');
+
+    const session = await this.stripe.checkout.sessions.create({
+      customer: customerId,
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      line_items: [
+        {
+          price_data: {
+            currency: price.currency,
+            product_data: {
+              name: 'SmartVan Premium',
+              description: 'Analytics, AI Route Optimization, Safety Checklist Compliance, Ratings Log, Complaints & Reports, and Fee Management.',
+            },
+            unit_amount: Math.round(price.amount * 100),
+            recurring: { interval: 'month' },
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: `${process.env.FRONTEND_URL || 'https://app.smartvan.pk'}/settings?premium=success`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://app.smartvan.pk'}/settings?premium=cancelled`,
+      metadata: { adminId, schoolId, type: 'premium_feature_tier' },
+      subscription_data: { metadata: { adminId, schoolId, type: 'premium_feature_tier' } },
+    });
+
+    return { sessionUrl: session.url, sessionId: session.id, price };
+  }
+
+  /** What kind of subscription a given Stripe subscription ID is — defaults
+   * to 'van_billing' for subscriptions created before this metadata existed. */
+  private async resolveSubscriptionType(subscriptionId: string | null | undefined): Promise<string> {
+    if (!subscriptionId) return 'van_billing';
+    try {
+      const sub = await this.stripe.subscriptions.retrieve(subscriptionId);
+      return (sub.metadata as any)?.type || 'van_billing';
+    } catch {
+      return 'van_billing';
+    }
   }
 
   // Get subscription status
@@ -262,12 +332,26 @@ export class BillingService {
 
     switch (event.type) {
       case 'checkout.session.completed': {
+        // Two independent subscriptions can exist on the same Stripe
+        // customer (per-van billing, and the Premium feature tier) — route
+        // by the type tag set at checkout-session creation, never assume.
         const session = event.data.object as any;
         const schoolId = session.metadata?.schoolId;
-        if (schoolId) {
+        const type = session.metadata?.type || 'van_billing';
+        if (!schoolId) break;
+        if (type === 'premium_feature_tier') {
           await this.databaseService.repositories.SchoolModel.updateOne(
             { _id: new Types.ObjectId(schoolId) },
-            { $set: { subscriptionStatus: 'active', currentPlan: 'Paid' } }
+            { $set: {
+              featureTier: 'premium',
+              premiumSubscriptionStatus: 'active',
+              premiumStripeSubscriptionId: session.subscription,
+            } },
+          );
+        } else {
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { _id: new Types.ObjectId(schoolId) },
+            { $set: { subscriptionStatus: 'active', currentPlan: 'Paid' } },
           );
         }
         break;
@@ -275,10 +359,18 @@ export class BillingService {
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice;
         const customerId = invoice.customer as string;
-        await this.databaseService.repositories.SchoolModel.updateOne(
-          { stripeCustomerId: customerId },
-          { $set: { subscriptionStatus: 'payment_failed' } }
-        );
+        const type = await this.resolveSubscriptionType((invoice as any).subscription);
+        if (type === 'premium_feature_tier') {
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { stripeCustomerId: customerId },
+            { $set: { premiumSubscriptionStatus: 'payment_failed' } },
+          );
+        } else {
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { stripeCustomerId: customerId },
+            { $set: { subscriptionStatus: 'payment_failed' } },
+          );
+        }
         break;
       }
       case 'invoice.payment_succeeded': {
@@ -289,19 +381,37 @@ export class BillingService {
         // delinquent indefinitely.
         const invoice = event.data.object as Stripe.Invoice;
         const customerId = invoice.customer as string;
-        await this.databaseService.repositories.SchoolModel.updateOne(
-          { stripeCustomerId: customerId },
-          { $set: { subscriptionStatus: 'active', currentPlan: 'Paid' } }
-        );
+        const type = await this.resolveSubscriptionType((invoice as any).subscription);
+        if (type === 'premium_feature_tier') {
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { stripeCustomerId: customerId },
+            { $set: { premiumSubscriptionStatus: 'active', featureTier: 'premium' } },
+          );
+        } else {
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { stripeCustomerId: customerId },
+            { $set: { subscriptionStatus: 'active', currentPlan: 'Paid' } },
+          );
+        }
         break;
       }
       case 'customer.subscription.deleted': {
         const sub = event.data.object as Stripe.Subscription;
         const customerId = sub.customer as string;
-        await this.databaseService.repositories.SchoolModel.updateOne(
-          { stripeCustomerId: customerId },
-          { $set: { subscriptionStatus: 'inactive', currentPlan: 'Free' } }
-        );
+        const type = (sub.metadata as any)?.type || 'van_billing';
+        if (type === 'premium_feature_tier') {
+          // Auto-relock: a cancelled/expired Premium subscription drops
+          // the school straight back to Basic, no manual step needed.
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { stripeCustomerId: customerId, premiumStripeSubscriptionId: sub.id },
+            { $set: { featureTier: 'basic', premiumSubscriptionStatus: 'inactive' } },
+          );
+        } else {
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { stripeCustomerId: customerId },
+            { $set: { subscriptionStatus: 'inactive', currentPlan: 'Free' } },
+          );
+        }
         break;
       }
     }
