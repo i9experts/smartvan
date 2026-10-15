@@ -314,10 +314,22 @@ async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string, plan?: 'b
         schoolId: schoolId,
       });
 
-      // 🔹 Vans count
+      // 🔹 Vans — fetch active van records (not just a count) so we can
+      // estimate what the fleet is actually worth at current per-van
+      // prices. Shows up even for schools that have real vans in use but
+      // were never put through Stripe checkout (subscriptionStatus still
+      // reads 'no_subscription' for those).
+      const activeVans = await this.databaseService.repositories.VanModel.find(
+        { schoolId: schoolId, status: 'active' },
+        { vehicleType: 1, vehicleCategory: 1 },
+      ).lean();
       const vansCount = await this.databaseService.repositories.VanModel.countDocuments({
         schoolId: schoolId,
       });
+      const estimatedMonthlyVanBilling = this.billingService.estimateMonthlyVanRevenue(
+        activeVans,
+        school.currency || 'PKR',
+      );
 
       // 🔹 Routes count
       const routesCount = await this.databaseService.repositories.routeModel.countDocuments({
@@ -345,6 +357,9 @@ async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string, plan?: 'b
         totalKids: kidsCount,
         totalVans: vansCount,
         totalRoutes: routesCount,
+        activeVans: activeVans.length,
+        estimatedMonthlyVanBilling,
+        currency: school.currency || 'PKR',
       };
     })
   );
@@ -3019,12 +3034,6 @@ async getAllDriversForSuperAdmin(
       };
     });
 
-    // Per-van pricing tiers (matches your actual Stripe price points)
-    const priceMap: Record<string, number> = {
-      car: 790, hiroof: 990, hiace: 990, bus: 1990, coach: 1990,
-    };
-    const vanPrice = (v: any) => priceMap[(v.vehicleType || '').toLowerCase()] ?? 990;
-
     let billingSchools: any[] = [];
     try {
       billingSchools = await this.billingService.getAllSchoolsBilling();
@@ -3041,8 +3050,8 @@ async getAllDriversForSuperAdmin(
 
     for (const s of schools as any[]) {
       const sid = s._id.toString();
-      const schoolVans = vansBySchool[sid] || [];
-      const monthlyRevenue = schoolVans.reduce((sum, v) => sum + vanPrice(v), 0);
+      const schoolVans = (vansBySchool[sid] || []).filter((v: any) => v.status === 'active');
+      const monthlyRevenue = this.billingService.estimateMonthlyVanRevenue(schoolVans, (s as any).currency || 'PKR');
       const billing = billingBySchoolId[sid];
 
       if (billing) {
@@ -3076,6 +3085,13 @@ async getAllDriversForSuperAdmin(
     }
     const premiumMrr = planBreakdown?.estimatedPremiumMrrPkr || 0;
     const totalMrr = estimatedMonthlyRevenue + premiumMrr;
+    // What the active fleet is actually worth at current per-van prices,
+    // whether or not Stripe billing was ever set up for it — surfaces
+    // schools (like a manually-provisioned legacy account) that are
+    // running real vans but contributing 0 to estimatedMonthlyRevenue
+    // above because they have no confirmed subscription.
+    const potentialVanBillingByCurrency = planBreakdown?.potentialVanBillingByCurrency || {};
+    const unbilledSchoolsWithVans = planBreakdown?.unbilledSchoolsWithVans || 0;
 
     return {
       message: 'Super admin overview fetched successfully',
@@ -3097,6 +3113,8 @@ async getAllDriversForSuperAdmin(
           totalArr: totalMrr * 12,
           currency: 'PKR',
           planBreakdown,
+          potentialVanBillingByCurrency,
+          unbilledSchoolsWithVans,
         },
         fleet: {
           total: totalFleet,
