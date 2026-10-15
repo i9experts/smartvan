@@ -361,24 +361,41 @@ export class BillingService {
     }
 
     const schoolAny = school as any;
+    const currency = (schoolAny.currency || 'PKR').toUpperCase();
+    const note = input.note.trim();
+    const markedAt = new Date();
     const update: any = {};
+    const manualPayments: any[] = [];
+
     if (input.vanBilling) {
       update.subscriptionStatus = 'active';
       update.currentPlan = 'Paid';
+      const bill = await this.calculateMonthlyBillForSchool(school);
+      manualPayments.push({ type: 'van_billing', amount: bill.totalAmount, currency: bill.currency, note, markedBy: actor.email, markedAt });
     }
     if (input.premium) {
       update.premiumSubscriptionStatus = 'active';
       update.featureTier = 'premium';
+      let amount = 0;
+      try {
+        amount = this.getPremiumPrice(currency).amount;
+      } catch {
+        // Pricing not configured — still record the override, just without a dollar amount.
+      }
+      manualPayments.push({ type: 'premium_feature_tier', amount, currency, note, markedBy: actor.email, markedAt });
     }
 
-    await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: update });
+    await this.databaseService.repositories.SchoolModel.updateOne(
+      { _id: school._id },
+      { $set: update, $push: { manualPayments: { $each: manualPayments } } },
+    );
 
     this.auditLogService.record(
       'billing_manually_marked_paid',
       actor.userId,
       actor.email,
       'superadmin',
-      { schoolId: school._id.toString(), schoolName: schoolAny.schoolName, ...update, note: input.note.trim() },
+      { schoolId: school._id.toString(), schoolName: schoolAny.schoolName, ...update, note },
     );
 
     return {
@@ -466,13 +483,17 @@ export class BillingService {
     const schoolAny = school as any;
     const bill = await this.calculateMonthlyBill(adminId);
 
+    // A school can be confirmed paid without any live Stripe subscription
+    // to point to — a superadmin's manual override (manuallyMarkPaid) for
+    // a payment collected outside Stripe's own checkout. The stored
+    // subscriptionStatus is authoritative whenever Stripe has nothing to
+    // show, so this never contradicts what the superadmin just confirmed.
+    const manuallyActive = schoolAny.subscriptionStatus === 'active';
+
     if (!schoolAny.stripeCustomerId) {
-      return {
-        status: 'no_subscription',
-        plan: 'Free Trial',
-        bill,
-        subscription: null,
-      };
+      return manuallyActive
+        ? { status: 'active', plan: 'Active (manually confirmed by SmartVan)', bill, subscription: null }
+        : { status: 'no_subscription', plan: 'Free Trial', bill, subscription: null };
     }
 
     const subscriptions = await this.stripe.subscriptions.list({
@@ -488,12 +509,9 @@ export class BillingService {
     const vanSub = subscriptions.data.find((s) => ((s.metadata as any)?.type || 'van_billing') === 'van_billing');
 
     if (!vanSub) {
-      return {
-        status: 'inactive',
-        plan: 'No Active Plan',
-        bill,
-        subscription: null,
-      };
+      return manuallyActive
+        ? { status: 'active', plan: 'Active (manually confirmed by SmartVan)', bill, subscription: null }
+        : { status: 'inactive', plan: 'No Active Plan', bill, subscription: null };
     }
 
     return {
@@ -510,7 +528,12 @@ export class BillingService {
 
   // Get billing history
   async getBillingHistory(adminId: string) {
-    const { customerId } = await this.createOrGetCustomer(adminId);
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new BadRequestException('School not found');
+    const schoolAny = school as any;
+
+    const { customerId } = await this.createOrGetCustomerForSchool(school);
     const invoices = await this.stripe.invoices.list({
       customer: customerId,
       limit: 10,
@@ -519,7 +542,7 @@ export class BillingService {
     // Tag each invoice van_billing vs premium_feature_tier (same lookup the
     // webhook uses) so the billing page can show which subscription each
     // payment belongs to, rather than one undifferentiated list.
-    return Promise.all(invoices.data.map(async (inv) => ({
+    const stripeHistory = await Promise.all(invoices.data.map(async (inv) => ({
       id: inv.id,
       amount: (inv.amount_paid / 100),
       currency: inv.currency.toUpperCase(),
@@ -527,7 +550,25 @@ export class BillingService {
       date: new Date(inv.created * 1000),
       pdfUrl: inv.invoice_pdf,
       type: await this.resolveSubscriptionType((inv as any).subscription),
+      manual: false,
     })));
+
+    // A payment collected outside Stripe's own checkout has no Stripe
+    // invoice to show here at all — manuallyMarkPaid() records those
+    // separately so Payment History isn't silently empty for them.
+    const manualHistory = (schoolAny.manualPayments || []).map((p: any) => ({
+      id: `manual-${p.type}-${new Date(p.markedAt).getTime()}`,
+      amount: p.amount,
+      currency: p.currency,
+      status: 'paid',
+      date: new Date(p.markedAt),
+      pdfUrl: null,
+      type: p.type,
+      manual: true,
+      note: p.note,
+    }));
+
+    return [...stripeHistory, ...manualHistory].sort((a, b) => b.date.getTime() - a.date.getTime());
   }
 
   // Handle Stripe webhook

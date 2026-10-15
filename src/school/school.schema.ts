@@ -26,6 +26,27 @@ class InvoiceEntry {
   downloadUrl?: string; // S3 link / PDF link etc.
 }
 
+@Schema({ _id: false })
+class ManualPaymentEntry {
+  @Prop({ required: true })
+  type: string; // 'van_billing' | 'premium_feature_tier'
+
+  @Prop({ required: true })
+  amount: number;
+
+  @Prop({ required: true })
+  currency: string;
+
+  @Prop({ required: true })
+  note: string;
+
+  @Prop({ required: true })
+  markedBy: string; // superadmin email
+
+  @Prop({ required: true })
+  markedAt: Date;
+}
+
 
 @Schema({ timestamps: true })
 export class School {
@@ -140,6 +161,14 @@ export class School {
 
   @Prop({ type: String, enum: ['active', 'inactive', 'payment_failed'], default: 'inactive' })
   premiumSubscriptionStatus: string;
+
+  // A payment collected outside Stripe's own checkout (manually-sent
+  // invoice/payment link, bank transfer) never produces a Stripe invoice —
+  // nothing for getBillingHistory's live Stripe query to ever show. Each
+  // manuallyMarkPaid() call appends one entry here so Payment History has
+  // something to display for it, clearly tagged as manually recorded.
+  @Prop({ type: [ManualPaymentEntry], default: [] })
+  manualPayments: ManualPaymentEntry[];
 }
 
 export const SchoolSchema = SchemaFactory.createForClass(School);
