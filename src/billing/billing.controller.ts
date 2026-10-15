@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Body, Req, UseGuards, Headers, RawBodyRequest, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Req, UseGuards, Headers, RawBodyRequest, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { BillingService } from './billing.service';
 import { Request } from 'express';
@@ -76,6 +76,22 @@ export class BillingController {
       throw new ForbiddenException('Only superadmins can access this API');
     }
     return this.billingService.getPlanBreakdown();
+  }
+
+  // Emails a specific school's billing contact a payment link for their
+  // current fleet, for schools getPlanBreakdown() surfaces as running vans
+  // without a confirmed subscription (e.g. manually-provisioned accounts
+  // that never went through self-serve checkout).
+  @UseGuards(AuthGuard('jwt'))
+  @Post('schools/:schoolId/send-reminder')
+  async sendBillingReminder(@Req() req: any, @Param('schoolId') schoolId: string) {
+    if (!req.user || req.user.role !== 'superadmin') {
+      throw new ForbiddenException('Only superadmins can access this API');
+    }
+    return this.billingService.sendBillingReminder(schoolId, {
+      userId: req.user.userId,
+      email: req.user.email,
+    });
   }
 
   @Post('webhook')
