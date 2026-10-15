@@ -9,6 +9,7 @@ import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { EtaService } from './eta.service';
 import { GeofenceService } from './geofence.service';
 import { downsample, encodePolyline } from './polyline.util';
+import { simplifyTrail, toTrailPoints } from './trip-history.util';
 import { isValidPoint, resolveStopPoint } from 'src/route/stop-point.util';
 import { isMoving, nextTrafficState } from './traffic-delay.util';
 import { cleanBackfill, trackingLostMinutes } from './tracking-health.util';
@@ -55,7 +56,9 @@ export class TripLiveService {
     } else if (user?.userType === 'parent') {
       const kids: any[] = await repos.KidModel.find({ parentId: new Types.ObjectId(userId) }, { _id: 1, VanId: 1 }).lean();
       const ids = new Set(kids.map((k) => k._id.toString()));
-      allowed = kids.some((k) => k.VanId === trip.vanId)
+      // A finished trip is only visible to parents whose child was on it;
+      // for live trips the van match is enough (so a late joiner can watch).
+      allowed = (trip.status !== 'end' && kids.some((k) => k.VanId === trip.vanId))
         || (trip.kids || []).some((k: any) => ids.has(k.kidId?.toString()))
         || (route?.kidLocations || []).some((kl: any) => ids.has(kl.kidId?.toString()));
     } else if (user?.role === 'superadmin') {
@@ -195,20 +198,30 @@ export class TripLiveService {
 
   // ─── Trail ──────────────────────────────────────────────────────────
 
-  /** The path the van has actually driven on this trip (max 2000 points). */
+  /**
+   * The path the van has actually driven on this trip.
+   * `polyline`/`points` (≤2000 pts, encoded) feed the live map; `path` is
+   * the same trail as [{lat,lng,t}] simplified to ≤1000 points, with
+   * `start`/`end` for history screens.
+   */
   async trail(user: any, tripId: string) {
     const { trip } = await this.loadViewableTrip(user, tripId);
-    const pts: [number, number][] = (trip.locations || [])
-      .filter((l: any) => Number.isFinite(l?.lat) && Number.isFinite(l?.long))
-      .map((l: any) => [l.lat, l.long]);
+    const all = toTrailPoints(trip.locations || []);
+    const pts: [number, number][] = all.map((p) => [p.lat, p.lng]);
     const sampled = downsample(pts, 2000);
+    const path = simplifyTrail(all, 1000);
+    const startedAt = trip.startedAt || trip.tripStart?.startTime || trip.createdAt;
     return {
       success: true,
       data: {
         tripId,
         polyline: encodePolyline(sampled),
         points: sampled.length,
-        startedAt: trip.tripStart?.startTime || trip.createdAt,
+        path,
+        start: all[0] || null,
+        end: all[all.length - 1] || null,
+        startedAt,
+        endedAt: trip.endedAt || trip.tripEnd?.endTime || null,
         lastAt: trip.locations?.[trip.locations.length - 1]?.time || null,
       },
     };
