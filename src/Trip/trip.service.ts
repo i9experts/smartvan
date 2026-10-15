@@ -47,7 +47,8 @@ import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
 import { TripLiveService } from './trip-live.service';
 import { applyEndStats } from './trip-history.util';
-import { resolveStopPoint } from 'src/route/stop-point.util';
+import { isValidPoint, resolveStopPoint } from 'src/route/stop-point.util';
+import { mergeStopOrder, planOptimization, remainingKidIds, stopStateOf } from './optimize-route.util';
 import {
   checklistDate,
   checklistItemDefs,
@@ -667,52 +668,93 @@ private async handleTripCompletionForRating(trip: any, van: any, driver: any) {
 }
 
 // Lets a driver ask for an optimized stop order on a trip already in
-// progress. Compares two real Google Directions results (the admin's
-// originally-entered stop order vs. Google's optimize:true reordering) so
-// the distance/time "saved" shown to the driver is a real number, not an
-// estimate. Never blocks the trip itself — this is purely advisory; the
-// driver can ignore it and the trip isn't affected either way.
+// progress. Only the stops still to visit are optimized (kids waiting on a
+// pick trip, kids still in the van on a drop trip) from the van's current
+// position, in the direction of the trip. Compares two real Google Directions
+// results (the current order vs. Google's optimize:true reordering) so the
+// distance/time "saved" shown to the driver is a real number, not an
+// estimate. The new order is saved on the trip (routeOptimization.stopOrder),
+// which is what the live route plan follows from then on.
 async optimizeRoute(driverId: string, dto: OptimizeRouteDto) {
+  const repos = this.databaseService.repositories;
   const driverObjectId = new Types.ObjectId(driverId);
 
-  const driver = await this.databaseService.repositories.driverModel.findById(driverObjectId);
+  const driver = await repos.driverModel.findById(driverObjectId);
   if (!driver) throw new UnauthorizedException('Driver not found');
 
-  const trip = await this.databaseService.repositories.TripModel.findById(dto.tripId);
+  const trip: any = await repos.TripModel.findById(dto.tripId);
   if (!trip) throw new NotFoundException('Trip not found');
 
-  const van = await this.databaseService.repositories.VanModel.findOne({ driverId: driverObjectId });
+  const van = await repos.VanModel.findOne({ driverId: driverObjectId });
   if (!van || trip.vanId !== van._id.toString()) {
     throw new BadRequestException('This trip does not belong to you');
   }
-
-  const route: any = await this.databaseService.repositories.routeModel.findById(trip.routeId);
-  if (!route) throw new NotFoundException('Route not found for this trip');
-
-  const kidStops: { kidId: string; lat: number; long: number }[] = route.kidLocations || [];
-  if (kidStops.length < 1) {
-    throw new BadRequestException('This route has no stops to optimize');
+  if (trip.status !== 'ongoing') {
+    throw new BadRequestException('Route can only be optimized while the trip is in progress');
   }
 
-  const origin = dto.lat != null && dto.long != null
-    ? { lat: dto.lat, lng: dto.long }
-    : trip.tripStart?.lat != null && trip.tripStart?.long != null
-      ? { lat: trip.tripStart.lat, lng: trip.tripStart.long }
-      : { lat: route.startPoint?.lat, lng: route.startPoint?.long };
+  const route: any = await repos.routeModel.findById(trip.routeId);
+  if (!route) throw new NotFoundException('Route not found for this trip');
 
-  const destination = route.endPoint?.lat != null && route.endPoint?.long != null
-    ? { lat: route.endPoint.lat, lng: route.endPoint.long }
-    : { lat: kidStops[kidStops.length - 1].lat, lng: kidStops[kidStops.length - 1].long };
+  const kidLocations: any[] = (route.kidLocations || []).filter((kl: any) => kl?.kidId);
+  if (kidLocations.length < 1) {
+    throw new BadRequestException('This route has no stops to optimize');
+  }
+  const kidIds = kidLocations.map((kl) => kl.kidId.toString());
 
-  if (origin.lat == null || origin.lng == null) {
+  const [kids, absences, school]: any[] = await Promise.all([
+    repos.KidModel.find(
+      { _id: { $in: kidIds.map((id) => new Types.ObjectId(id)) } },
+      { fullname: 1, homeLat: 1, homeLng: 1 },
+    ).lean(),
+    repos.kidAbsenceModel.find({ kidId: { $in: kidIds }, date: todayIn(TZ) }, { kidId: 1, tripType: 1 }).lean(),
+    Types.ObjectId.isValid(trip.schoolId) ? repos.SchoolModel.findById(trip.schoolId, { lat: 1, long: 1 }).lean() : null,
+  ]);
+  const kidById = new Map<string, any>(kids.map((k: any) => [k._id.toString(), k]));
+
+  // Same visiting order and stop states as the live route plan.
+  const saved: string[] = (trip.routeOptimization?.stopOrder || []).map(String);
+  const currentOrder = [...saved, ...kidIds.filter((id) => !saved.includes(id))];
+  const absent = new Set<string>(absences.filter((a: any) => absenceCovers(a.tripType, trip.type)).map((a: any) => a.kidId));
+  const noShow = new Set<string>((trip.noShows || []).map((n: any) => n.kidId));
+  const remaining = remainingKidIds(trip.type, currentOrder, (id) =>
+    stopStateOf(trip.kids || [], id, noShow, absent),
+  );
+
+  const points = new Map<string, { lat: number; lng: number }>();
+  for (const kl of kidLocations) {
+    const pt = resolveStopPoint(kl, kidById.get(kl.kidId.toString()));
+    if (pt) points.set(kl.kidId.toString(), pt);
+  }
+  const schoolPoint = school && isValidPoint(school.lat, school.long) ? { lat: school.lat, lng: school.long } : null;
+
+  // Start from where the van is: the app's position, else its last recorded
+  // fix, else (drop) the school or (pick) the first stop still to visit.
+  const last = trip.locations?.[trip.locations.length - 1];
+  const origin =
+    dto.lat != null && dto.long != null && isValidPoint(dto.lat, dto.long)
+      ? { lat: dto.lat, lng: dto.long }
+      : last && isValidPoint(last.lat, last.long)
+        ? { lat: last.lat, lng: last.long }
+        : (trip.type === 'drop' ? schoolPoint : null) || points.get(remaining.find((id) => points.has(id)) ?? '');
+  if (!origin) {
     throw new BadRequestException('No starting location available to optimize from');
   }
 
-  const waypoints = kidStops.map((s) => ({ lat: s.lat, lng: s.long }));
+  const plan = planOptimization({ type: trip.type, remaining, points, school: schoolPoint, origin });
+  if (!plan) {
+    throw new BadRequestException('No stops left to optimize');
+  }
 
-  const result = await this.etaService.getOptimizedRoute(origin, destination, waypoints);
+  const result = await this.etaService.getOptimizedRoute(
+    plan.origin,
+    plan.destination,
+    plan.waypointKidIds.map((id) => points.get(id)!),
+  );
 
-  const stopOrder = result.optimizedOrder.map((i) => kidStops[i].kidId.toString());
+  const optimizedWaypointIds = result.optimizedOrder.map((i) => plan.waypointKidIds[i]);
+  const stopOrder = mergeStopOrder(currentOrder, remaining, optimizedWaypointIds, plan);
+  const visitOrder = stopOrder.filter((id) => remaining.includes(id) && points.has(id));
   const distanceSavedMeters = result.baselineDistanceMeters - result.optimizedDistanceMeters;
   const durationSavedSeconds = result.baselineDurationSeconds - result.optimizedDurationSeconds;
 
@@ -728,21 +770,16 @@ async optimizeRoute(driverId: string, dto: OptimizeRouteDto) {
   };
   await trip.save();
 
-  const kids = await this.databaseService.repositories.KidModel.find(
-    { _id: { $in: stopOrder } },
-    { fullname: 1 },
-  );
-  const nameByKidId = new Map(kids.map((k: any) => [k._id.toString(), k.fullname]));
-  const stopByKidId = new Map(kidStops.map((s) => [s.kidId.toString(), s]));
-
   return {
     message: 'Route optimized',
     data: {
-      stops: stopOrder.map((kidId, sequence) => ({
+      tripType: trip.type,
+      // Only the stops still to visit, in the new order.
+      stops: visitOrder.map((kidId, sequence) => ({
         kidId,
-        kidName: nameByKidId.get(kidId) || null,
-        lat: stopByKidId.get(kidId)?.lat ?? null,
-        long: stopByKidId.get(kidId)?.long ?? null,
+        kidName: kidById.get(kidId)?.fullname || null,
+        lat: points.get(kidId)!.lat,
+        long: points.get(kidId)!.lng,
         sequence: sequence + 1,
       })),
       optimizedDistanceMeters: result.optimizedDistanceMeters,
@@ -751,8 +788,8 @@ async optimizeRoute(driverId: string, dto: OptimizeRouteDto) {
       baselineDurationSeconds: result.baselineDurationSeconds,
       distanceSavedMeters,
       durationSavedSeconds,
-      origin,
-      destination,
+      origin: plan.origin,
+      destination: plan.destination,
       overviewPolyline: result.overviewPolyline,
     },
   };
