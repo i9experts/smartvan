@@ -832,6 +832,14 @@ if (existingVan) {
     date: new Date(),
   });
 
+  // 💬 WhatsApp: approved smartvan_driver_welcome template (driver, school, van number).
+  // Fire-and-forget; the assignment never fails because of it.
+  if (driver.phoneNo) {
+    this.whatsappService
+      .sendDriverWelcome(driver.phoneNo, driver.fullname || 'Driver', school.schoolName || 'your school', van.carNumber || 'N/A')
+      .catch((err) => console.error('Driver welcome WhatsApp failed:', err?.message || err));
+  }
+
   return {
     message: 'Van assigned successfully & driver notified',
     data: updatedVan,

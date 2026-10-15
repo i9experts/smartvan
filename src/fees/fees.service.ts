@@ -8,6 +8,7 @@ import { TransportPayment, TransportPaymentDocument } from './transport-payment.
 import { DatabaseService } from 'src/database/databaseservice';
 import { findDriverVanAndKids } from './driver-van-kids';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
+import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 
 @Injectable()
 export class FeesService {
@@ -16,6 +17,7 @@ export class FeesService {
     @InjectModel(TransportPayment.name) private paymentModel: Model<TransportPaymentDocument>,
     private databaseService: DatabaseService,
     private firebaseAdminService: FirebaseAdminService,
+    private whatsappService: WhatsappService,
   ) {}
 
   private getMailer() {
@@ -346,6 +348,7 @@ export class FeesService {
     }).lean();
 
     let sent = 0;
+    let whatsappSent = 0;
     for (const p of unpaid as any[]) {
       const kid = await this.databaseService.repositories.KidModel
         .findById(p.kidId, { fullname: 1, parentId: 1 }).lean() as any;
@@ -371,9 +374,22 @@ export class FeesService {
         });
         sent++;
       }
+
+      // 💬 WhatsApp: approved smartvan_fee_reminder template
+      // (parent, child, month, amount). Failures never block the rest.
+      if (parent?.phoneNo) {
+        const res = await this.whatsappService.sendFeeReminderTemplate(
+          parent.phoneNo,
+          parent.fullname || 'Parent',
+          kid.fullname || 'your child',
+          targetMonth,
+          `${p.currency || 'PKR'} ${p.amount}`,
+        );
+        if (res?.success) whatsappSent++;
+      }
     }
 
-    return { message: 'Reminders sent', sent, total: unpaid.length };
+    return { message: 'Reminders sent', sent, whatsappSent, total: unpaid.length };
   }
 
   async getFeeSummary(schoolId: string, month?: string) {

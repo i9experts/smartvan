@@ -8,6 +8,7 @@ import { TransportPayment, TransportPaymentSchema } from './transport-payment.sc
 import { FirebaseAdminModule } from 'src/notification/firebase.module';
 import { PaymentCheckout, PaymentCheckoutSchema } from './payment-checkout.schema';
 import { OnlinePaymentsService } from './online-payments.service';
+import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { OnlinePaymentsService } from './online-payments.service';
       { name: PaymentCheckout.name, schema: PaymentCheckoutSchema },
     ]),
     FirebaseAdminModule,
+    WhatsappModule,
   ],
   controllers: [FeesController],
   providers: [FeesService, OnlinePaymentsService],
