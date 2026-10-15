@@ -60,6 +60,17 @@ export class BillingService {
     return 'hiroof_pkr'; // default
   }
 
+  // Sum of actual per-van pricing (by vehicle type/category) for a given
+  // list of van records — the same price table calculateMonthlyBill() uses,
+  // exposed so other services (e.g. the super admin overview) can estimate
+  // a school's fleet value without duplicating/drifting from these prices.
+  estimateMonthlyVanRevenue(vans: any[], currency = 'PKR'): number {
+    return (vans || []).reduce((sum, v) => {
+      const priceKey = this.getPriceKey(v.vehicleType || 'Hiroof', currency, v.vehicleCategory);
+      return sum + (VAN_PRICES[priceKey]?.amount || 0);
+    }, 0);
+  }
+
   // Calculate monthly bill for a school
   async calculateMonthlyBill(adminId: string) {
     const adminObjectId = new Types.ObjectId(adminId);
@@ -459,17 +470,45 @@ export class BillingService {
       { featureTier: 1, premiumSubscriptionStatus: 1, subscriptionStatus: 1, currency: 1 },
     ).lean();
 
+    // A school can have active vans (real fleet in use) without ever having
+    // completed Stripe checkout — manually-provisioned/legacy accounts in
+    // particular. subscriptionStatus alone then reads 'no_subscription' and
+    // every revenue figure derived only from confirmed subscriptions hides
+    // that fleet entirely. Here we also compute what the fleet is actually
+    // worth at current per-van prices, regardless of billing status, so the
+    // super admin can see which schools are running unbilled.
+    const schoolIds = schools.map((s: any) => s._id.toString());
+    const activeVans = await this.databaseService.repositories.VanModel.find(
+      { schoolId: { $in: schoolIds }, status: 'active' },
+      { schoolId: 1, vehicleType: 1, vehicleCategory: 1 },
+    ).lean();
+    const vansBySchoolId: Record<string, any[]> = {};
+    activeVans.forEach((v: any) => {
+      (vansBySchoolId[v.schoolId] ||= []).push(v);
+    });
+
     const byTier = { basic: 0, premium: 0 };
     const byVanBillingStatus: Record<string, number> = {};
+    const potentialVanBillingByCurrency: Record<string, number> = {};
     let premiumActiveCount = 0;
+    let unbilledSchoolsWithVans = 0;
 
     schools.forEach((s: any) => {
+      const sid = s._id.toString();
       const tier = s.featureTier === 'premium' ? 'premium' : 'basic';
       byTier[tier] += 1;
       if (s.premiumSubscriptionStatus === 'active') premiumActiveCount += 1;
 
       const vanStatus = s.subscriptionStatus || 'no_subscription';
       byVanBillingStatus[vanStatus] = (byVanBillingStatus[vanStatus] || 0) + 1;
+
+      const schoolVans = vansBySchoolId[sid] || [];
+      if (schoolVans.length > 0) {
+        const currency = (s.currency || 'PKR').toUpperCase();
+        const amount = this.estimateMonthlyVanRevenue(schoolVans, currency);
+        potentialVanBillingByCurrency[currency] = (potentialVanBillingByCurrency[currency] || 0) + amount;
+        if (vanStatus !== 'active') unbilledSchoolsWithVans += 1;
+      }
     });
 
     const premiumPricePkr = Number(process.env.PREMIUM_PLAN_PRICE_PKR) || 0;
@@ -484,6 +523,8 @@ export class BillingService {
         estimatedPremiumMrrPkr,
         premiumPricePkr,
         byVanBillingStatus,
+        potentialVanBillingByCurrency,
+        unbilledSchoolsWithVans,
       },
     };
   }
