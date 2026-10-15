@@ -195,3 +195,21 @@ Result saved on the alert (notification) document:
 `whatsappSkipped` is `throttled` or `no_recipients` when nothing was sent.
 Full numbers are stored on the alert but never written to logs (masked as
 `+92300***4567`).
+
+## 9. Optimize route (Oct 15 fix)
+
+`POST /trips/optimizeRoute { tripId, lat?, long? }` — trip must be `ongoing`.
+Only the stops **still to visit** are optimized: kids waiting (pick) or still
+in the van (drop); picked, dropped, absent and no-show stops are skipped, and
+stop points fall back to the child's home like the route plan does.
+Origin: the sent position, else the van's last recorded fix, else the school
+(drop) / first remaining stop (pick). Pick trips end at the school; a drop
+trip (or a school without a location) ends at the stop furthest from the van,
+because Google keeps the destination fixed. At most 23 stops are reordered, the
+rest stay in place.
+
+The new order is saved in `routeOptimization.stopOrder` with the finished
+stops first, so their numbers on the map do not change; `route-plan` follows
+it. Response `data.stops` lists only the remaining stops in the new order, plus
+`tripType`, `origin`, `destination`, distance/time totals and savings. 400 when
+the trip is not ongoing or no stops are left.

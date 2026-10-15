@@ -11,6 +11,7 @@ import { GeofenceService } from './geofence.service';
 import { downsample, encodePolyline } from './polyline.util';
 import { simplifyTrail, toTrailPoints } from './trip-history.util';
 import { isValidPoint, resolveStopPoint } from 'src/route/stop-point.util';
+import { stopStateOf } from './optimize-route.util';
 import { isMoving, nextTrafficState } from './traffic-delay.util';
 import { cleanBackfill, trackingLostMinutes } from './tracking-health.util';
 
@@ -101,17 +102,10 @@ export class TripLiveService {
       Types.ObjectId.isValid(trip.schoolId) ? repos.SchoolModel.findById(trip.schoolId, { schoolName: 1, lat: 1, long: 1 }).lean() : null,
     ]);
     const kidById = new Map(kids.map((k: any) => [k._id.toString(), k]));
-    const absent = new Set(absences.filter((a: any) => absenceCovers(a.tripType, trip.type)).map((a: any) => a.kidId));
-    const noShow = new Set((trip.noShows || []).map((n: any) => n.kidId));
+    const absent = new Set<string>(absences.filter((a: any) => absenceCovers(a.tripType, trip.type)).map((a: any) => a.kidId));
+    const noShow = new Set<string>((trip.noShows || []).map((n: any) => n.kidId));
     const entries = trip.kids || [];
-    const statusOf = (id: string): StopStatus => {
-      const mine = entries.filter((k: any) => k.kidId?.toString() === id);
-      if (mine.some((k: any) => k.status === 'dropped')) return 'dropped';
-      if (mine.some((k: any) => k.status === 'picked')) return trip.type === 'drop' ? 'picked' : 'picked';
-      if (noShow.has(id)) return 'no_show';
-      if (absent.has(id)) return 'absent';
-      return 'waiting';
-    };
+    const statusOf = (id: string): StopStatus => stopStateOf(entries, id, noShow, absent);
 
     const parentId = user?.userType === 'parent' ? user.userId : null;
     // Stop point = route stop location, or the child's home if the stop was
