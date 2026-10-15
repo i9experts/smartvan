@@ -387,10 +387,16 @@ export class BillingService {
     const subscriptions = await this.stripe.subscriptions.list({
       customer: schoolAny.stripeCustomerId,
       status: 'active',
-      limit: 1,
+      limit: 10,
     });
 
-    if (subscriptions.data.length === 0) {
+    // A customer can have an active Premium subscription alongside (or
+    // instead of) van billing — without filtering by type, the first
+    // result here could be the Premium one, misreporting its renewal date
+    // as the van billing status.
+    const vanSub = subscriptions.data.find((s) => ((s.metadata as any)?.type || 'van_billing') === 'van_billing');
+
+    if (!vanSub) {
       return {
         status: 'inactive',
         plan: 'No Active Plan',
@@ -399,15 +405,14 @@ export class BillingService {
       };
     }
 
-    const sub = subscriptions.data[0];
     return {
       status: 'active',
       plan: 'Active Subscription',
       bill,
       subscription: {
-        id: sub.id,
-        currentPeriodEnd: new Date((sub as any).current_period_end * 1000),
-        cancelAtPeriodEnd: sub.cancel_at_period_end,
+        id: vanSub.id,
+        currentPeriodEnd: new Date((vanSub as any).current_period_end * 1000),
+        cancelAtPeriodEnd: vanSub.cancel_at_period_end,
       },
     };
   }
@@ -420,14 +425,18 @@ export class BillingService {
       limit: 10,
     });
 
-    return invoices.data.map(inv => ({
+    // Tag each invoice van_billing vs premium_feature_tier (same lookup the
+    // webhook uses) so the billing page can show which subscription each
+    // payment belongs to, rather than one undifferentiated list.
+    return Promise.all(invoices.data.map(async (inv) => ({
       id: inv.id,
       amount: (inv.amount_paid / 100),
       currency: inv.currency.toUpperCase(),
       status: inv.status,
       date: new Date(inv.created * 1000),
       pdfUrl: inv.invoice_pdf,
-    }));
+      type: await this.resolveSubscriptionType((inv as any).subscription),
+    })));
   }
 
   // Handle Stripe webhook
