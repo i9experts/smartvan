@@ -135,6 +135,7 @@ async getAllSchoolsBySuperAdmin(
   @Query('limit') limit: string,
   @Query('search') search?: string,
   @Query('plan') plan?: 'basic' | 'premium',
+  @Query('billingStatus') billingStatus?: string,
 ) {
   // JWT user check
   if (!req.user || req.user.role !== 'superadmin') {
@@ -146,7 +147,7 @@ async getAllSchoolsBySuperAdmin(
   const limitNumber = limit ? parseInt(limit) : 10;
 
   // service call
-  return this.adminService.getAllSchoolsBySuperAdmin(pageNumber, limitNumber, search, plan);
+  return this.adminService.getAllSchoolsBySuperAdmin(pageNumber, limitNumber, search, plan, billingStatus);
 }
 
 

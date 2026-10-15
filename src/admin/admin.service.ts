@@ -260,7 +260,7 @@ async getSchoolById(schoolId: string) {
 
 
 
-async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string, plan?: 'basic' | 'premium') {
+async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string, plan?: 'basic' | 'premium', billingStatus?: string) {
   const skip = (page - 1) * limit;
 
   // ✅ Filter for search
@@ -270,6 +270,11 @@ async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string, plan?: 'b
   }
   if (plan === 'basic' || plan === 'premium') {
     filter.featureTier = plan;
+  }
+  if (billingStatus === 'no_subscription') {
+    filter.subscriptionStatus = { $in: [null, undefined, ''] };
+  } else if (billingStatus) {
+    filter.subscriptionStatus = billingStatus;
   }
 
   // ✅ Total count
