@@ -69,6 +69,15 @@ export class BillingController {
     return this.billingService.getAllSchoolsBilling();
   }
 
+  @UseGuards(AuthGuard('jwt'))
+  @Get('plan-breakdown')
+  async getPlanBreakdown(@Req() req: any) {
+    if (!req.user || req.user.role !== 'superadmin') {
+      throw new ForbiddenException('Only superadmins can access this API');
+    }
+    return this.billingService.getPlanBreakdown();
+  }
+
   @Post('webhook')
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,

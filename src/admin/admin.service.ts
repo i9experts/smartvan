@@ -13,6 +13,7 @@ import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { BillingService } from 'src/billing/billing.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
+import * as nodemailer from 'nodemailer';
 
 import { containsRegex } from 'src/common/regex.util';
 import mongoose from 'mongoose';
@@ -259,13 +260,21 @@ async getSchoolById(schoolId: string) {
 
 
 
-async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string) {
+async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string, plan?: 'basic' | 'premium', billingStatus?: string) {
   const skip = (page - 1) * limit;
 
   // ✅ Filter for search
   const filter: any = {};
   if (search) {
     filter.schoolName = { $regex: search, $options: 'i' };
+  }
+  if (plan === 'basic' || plan === 'premium') {
+    filter.featureTier = plan;
+  }
+  if (billingStatus === 'no_subscription') {
+    filter.subscriptionStatus = { $in: [null, undefined, ''] };
+  } else if (billingStatus) {
+    filter.subscriptionStatus = billingStatus;
   }
 
   // ✅ Total count
@@ -276,19 +285,27 @@ async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string) {
     filter,
     {
       schoolName: 1,
+      schoolEmail: 1,
       contactPerson: 1,
       allowedVans: 1,
       allowedRoutes: 1,
       contactNumber: 1,
       status: 1,
+      featureTier: 1,
+      premiumSubscriptionStatus: 1,
+      currentPlan: 1,
+      subscriptionStatus: 1,
+      address: 1,
+      createdAt: 1,
     }
   )
+    .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit);
 
   // ✅ Counts (parallel)
   const data = await Promise.all(
-    schools.map(async (school) => {
+    schools.map(async (school: any) => {
 
       const schoolId = school._id.toString();
 
@@ -310,12 +327,20 @@ async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string) {
       return {
         schoolId: school._id,
         schoolName: school.schoolName,
+        schoolEmail: school.schoolEmail,
         contactPerson: school.contactPerson,
         vanLimit: school.allowedVans,
         routesLimit: school.allowedRoutes,
         contactNumber: school.contactNumber,
         status: school.status,
         image: school.schoolImage,
+        address: school.address,
+        createdAt: school.createdAt,
+
+        featureTier: school.featureTier || 'basic',
+        premiumSubscriptionStatus: school.premiumSubscriptionStatus || 'inactive',
+        currentPlan: school.currentPlan || 'Free',
+        subscriptionStatus: school.subscriptionStatus || 'no_subscription',
 
         totalKids: kidsCount,
         totalVans: vansCount,
@@ -334,6 +359,61 @@ async getAllSchoolsBySuperAdmin(page = 1, limit = 10, search?: string) {
       limit,
       totalPages: Math.ceil(total / limit),
     },
+  };
+}
+
+private getBroadcastMailer() {
+  return nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
+    port: Number(process.env.EMAIL_PORT),
+    secure: false,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+}
+
+/** Superadmin: email every active school's admin. Best-effort per recipient — one bad address never blocks the rest. */
+async broadcastToAllAdmins(subject: string, message: string) {
+  if (!subject?.trim() || !message?.trim()) {
+    throw new BadRequestException('subject and message are required');
+  }
+
+  const schools = await this.databaseService.repositories.SchoolModel.find(
+    { status: 'active' },
+    { schoolEmail: 1, schoolName: 1 },
+  ).lean();
+  const recipients = [...new Set(schools.map((s: any) => s.schoolEmail).filter(Boolean))];
+
+  const mailer = this.getBroadcastMailer();
+  const html =
+    '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">' +
+    '<div style="background:#1B3B69;padding:24px;border-radius:12px 12px 0 0"><img src="https://app.smartvan.pk/favicon-192.png" alt="SmartVan" width="56" height="56" style="display:block;margin:0 auto 10px;border-radius:12px">' +
+    '<h2 style="color:white;margin:0;text-align:center">' + subject + '</h2></div>' +
+    '<div style="background:#f8f9fc;padding:24px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">' +
+    '<p style="color:#1a1a2e;font-size:14px;line-height:1.7;white-space:pre-wrap">' + message + '</p>' +
+    '<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">' +
+    '<p style="color:#9ca3af;font-size:12px;text-align:center">SmartVan — School Transport Intelligence | smartvan.pk</p>' +
+    '</div></div>';
+
+  const results = await Promise.allSettled(
+    recipients.map((to) =>
+      sendWithTimeout(
+        mailer.sendMail({
+          from: '"SmartVan Team" <' + process.env.EMAIL_USER + '>',
+          to,
+          subject,
+          html,
+        }).then(() => {}),
+        `broadcast to ${to}`,
+      ),
+    ),
+  );
+
+  return {
+    message: `Broadcast sent to ${recipients.length} school admin(s)`,
+    data: { recipientCount: recipients.length, failedCount: results.filter((r) => r.status === 'rejected').length },
   };
 }
 
@@ -2817,16 +2897,42 @@ async getAllDriversForSuperAdmin(
   }
 
   // Cross-tenant platform overview for the Super Admin dashboard.
-  // NOTE: "complaints" has no real backend concept yet (no Complaint model
-  // exists — only a Support schema for contact links, which is unrelated).
-  // Returning honest zeros there rather than fabricating numbers.
   async getSuperAdminOverview() {
-    const { SchoolModel, VanModel, driverModel, parentModel, TripModel } = this.databaseService.repositories;
+    const { SchoolModel, VanModel, driverModel, parentModel, TripModel, reportModel } = this.databaseService.repositories;
 
     const schools = await SchoolModel.find().lean();
     const totalInstitutions = schools.length;
     const activeInstitutions = schools.filter((s: any) => s.status === 'active').length;
     const inactiveInstitutions = totalInstitutions - activeInstitutions;
+    const suspendedInstitutions = inactiveInstitutions; // 'inActive' IS the suspend state — see changeSchoolStatusByAdmin
+
+    const now = new Date();
+    const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
+    const startOfWeek = new Date(now); startOfWeek.setDate(now.getDate() - 7);
+    const newInstitutionsToday = (schools as any[]).filter((s) => s.createdAt && new Date(s.createdAt) >= startOfToday).length;
+    const newInstitutionsThisWeek = (schools as any[]).filter((s) => s.createdAt && new Date(s.createdAt) >= startOfWeek).length;
+    // Simple, honestly-labeled definition: suspended as a share of every
+    // institution ever created — not a true cohort-based churn calculation,
+    // which would need historical subscription-cancellation snapshots this
+    // platform doesn't store yet.
+    const churnRatePercent = totalInstitutions > 0 ? Math.round((suspendedInstitutions / totalInstitutions) * 100) : 0;
+
+    // Real complaints/reports stats — a Report model has existed in this
+    // backend for a while; this overview just never queried it.
+    const allReports = await reportModel.find({ type: { $ne: 'adminReport' } }, { status: 1, issueType: 1, createdAt: 1, resolvedAt: 1 }).lean();
+    const openReports = (allReports as any[]).filter((r) => r.status !== 'resolved' && r.status !== 'rejected');
+    const resolvedReports = (allReports as any[]).filter((r) => r.status === 'resolved' && r.resolvedAt);
+    const categoryCounts: Record<string, number> = {};
+    (allReports as any[]).forEach((r) => {
+      const cat = r.issueType || 'Other';
+      categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+    });
+    const avgResolutionHours = resolvedReports.length > 0
+      ? Math.round(
+          resolvedReports.reduce((sum: number, r: any) => sum + (new Date(r.resolvedAt).getTime() - new Date(r.createdAt).getTime()), 0)
+          / resolvedReports.length / 3_600_000,
+        )
+      : null;
 
     const vans = await VanModel.find().lean();
     const totalFleet = vans.length;
@@ -2962,6 +3068,15 @@ async getAllDriversForSuperAdmin(
     const totalActiveVans = revenueBySchool.reduce((sum, r) => sum + r.totalVans, 0);
     const averageRevenuePerVehicle = totalActiveVans > 0 ? Math.round(estimatedMonthlyRevenue / totalActiveVans) : 0;
 
+    let planBreakdown: any = null;
+    try {
+      planBreakdown = (await this.billingService.getPlanBreakdown()).data;
+    } catch (err) {
+      console.error('getPlanBreakdown failed in overview:', err?.message || err);
+    }
+    const premiumMrr = planBreakdown?.estimatedPremiumMrrPkr || 0;
+    const totalMrr = estimatedMonthlyRevenue + premiumMrr;
+
     return {
       message: 'Super admin overview fetched successfully',
       data: {
@@ -2969,7 +3084,19 @@ async getAllDriversForSuperAdmin(
           total: totalInstitutions,
           active: activeInstitutions,
           inactive: inactiveInstitutions,
+          suspended: suspendedInstitutions,
+          newToday: newInstitutionsToday,
+          newThisWeek: newInstitutionsThisWeek,
+          churnRatePercent,
           snapshot,
+        },
+        revenue: {
+          vanBillingMrr: estimatedMonthlyRevenue,
+          premiumMrr,
+          totalMrr,
+          totalArr: totalMrr * 12,
+          currency: 'PKR',
+          planBreakdown,
         },
         fleet: {
           total: totalFleet,
@@ -3001,13 +3128,12 @@ async getAllDriversForSuperAdmin(
           today: tripsToday,
           completedToday,
         },
-        // No Complaint model exists yet on the backend — see note above.
         complaints: {
-          total: 0,
-          open: 0,
-          byCategory: [],
-          avgResolutionHours: null,
-          resolvedCount: 0,
+          total: allReports.length,
+          open: openReports.length,
+          byCategory: Object.entries(categoryCounts).map(([category, count]) => ({ category, count })),
+          avgResolutionHours,
+          resolvedCount: resolvedReports.length,
         },
         billing: {
           activeSubscriptions,

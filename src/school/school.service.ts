@@ -11,7 +11,7 @@ import { SchoolDocument } from './school.schema';
 import { SchoolLead, SchoolLeadDocument } from './school-lead.schema';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
-import { FEATURE_KEYS, FEATURE_KEY_SET, effectiveFeatures } from './feature-keys';
+import { FEATURE_KEYS, FEATURE_KEY_SET, effectiveFeatures, hasFeature } from './feature-keys';
 
 @Injectable()
 export class SchoolService {
@@ -121,80 +121,14 @@ export class SchoolService {
 
     // If activating — auto-provision admin account + school
     if (status === 'activated' && lead.status !== 'activated') {
-      // Check if admin already exists
-      const existing = await this.databaseService.repositories.AdminModel.findOne({
+      await this.provisionSchoolAndAdmin({
+        schoolName: lead.schoolName,
+        adminName: lead.adminName,
         email: lead.email,
+        phone: lead.phone,
+        address: lead.city + ', ' + lead.country,
+        currentPlan: lead.plan || 'Professional',
       });
-
-      if (!existing) {
-        const crypto = require('crypto');
-        const bcrypt = require('bcrypt');
-
-        // Generate random password
-        const randomPassword = crypto.randomBytes(6).toString('hex');
-        const hashedPassword = await bcrypt.hash(randomPassword, 10);
-
-        // Create admin account
-        const admin = await this.databaseService.repositories.AdminModel.create({
-          name: lead.adminName,
-          email: lead.email,
-          phoneNo: lead.phone,
-          password: hashedPassword,
-          role: 'admin',
-          isVerified: true,
-        });
-
-        // Create school record
-        await this.databaseService.repositories.SchoolModel.create({
-          schoolName: lead.schoolName,
-          schoolEmail: lead.email,
-          contactPerson: lead.adminName,
-          contactNumber: lead.phone,
-          address: lead.city + ', ' + lead.country,
-          currentPlan: lead.plan || 'Professional',
-          status: 'active',
-          admin: admin._id,
-        });
-
-        // Send WhatsApp welcome — fire-and-forget, never block activation on delivery
-        if (lead.phone) {
-          this.whatsappService.sendSchoolWelcome(lead.phone, lead.adminName, lead.schoolName)
-            .catch((err) => console.error('WhatsApp school welcome failed:', err));
-        }
-
-        // Send welcome email with credentials
-        try {
-          const mailer = this.getMailer();
-          await mailer.sendMail({
-            from: '"SmartVan Team" <' + process.env.EMAIL_USER + '>',
-            to: lead.email,
-            subject: 'Welcome to SmartVan — Your Account is Ready!',
-            html: '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">' +
-              '<div style="background:#1B3B69;padding:28px;border-radius:12px 12px 0 0;text-align:center">' +
-              '<img src="https://app.smartvan.pk/favicon-192.png" alt="SmartVan" width="56" height="56" style="display:block;margin:0 auto 10px;border-radius:12px"><h1 style="color:#FEC610;margin:0;font-size:24px">Welcome to SmartVan!</h1>' +
-              '<p style="color:rgba(255,255,255,0.7);margin:8px 0 0">Your school transport management account is ready</p>' +
-              '</div>' +
-              '<div style="background:#f8f9fc;padding:28px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">' +
-              '<p style="color:#1a1a2e;font-size:15px">Dear <strong>' + lead.adminName + '</strong>,</p>' +
-              '<p style="color:#6b7280;font-size:14px;line-height:1.7">Your SmartVan account for <strong>' + lead.schoolName + '</strong> has been activated. Here are your login credentials:</p>' +
-              '<div style="background:#1B3B69;border-radius:10px;padding:20px;margin:20px 0;text-align:center">' +
-              '<p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0 0 4px">Login Email</p>' +
-              '<p style="color:#FEC610;font-size:18px;font-weight:700;margin:0 0 16px">' + lead.email + '</p>' +
-              '<p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0 0 4px">Temporary Password</p>' +
-              '<p style="color:#FEC610;font-size:24px;font-weight:800;letter-spacing:3px;margin:0">' + randomPassword + '</p>' +
-              '</div>' +
-              '<div style="text-align:center;margin:20px 0">' +
-              '<a href="https://app.smartvan.pk/auth/login" style="background:#FEC610;color:#1B3B69;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Login to Admin Panel →</a>' +
-              '</div>' +
-              '<p style="color:#6b7280;font-size:13px;line-height:1.7">Please change your password after first login. If you need any help, reply to this email or WhatsApp us.</p>' +
-              '<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">' +
-              '<p style="color:#9ca3af;font-size:12px;text-align:center">SmartVan — School Transport Intelligence | smartvan.pk</p>' +
-              '</div></div>',
-          });
-        } catch (emailErr) {
-          console.error('Welcome email failed:', emailErr.message);
-        }
-      }
     }
 
     // Update lead status
@@ -206,6 +140,131 @@ export class SchoolService {
         ? 'Lead activated — admin account created and credentials emailed'
         : 'Status updated',
       data: lead,
+    };
+  }
+
+  /**
+   * Shared by lead activation and the superadmin's direct "+ Add
+   * Institution" flow — creates the admin account + school record, then
+   * emails the generated credentials. No-ops (returns null) if an admin
+   * with this email already exists, matching updateLeadStatus's original
+   * idempotency guard.
+   */
+  private async provisionSchoolAndAdmin(input: {
+    schoolName: string;
+    adminName: string;
+    email: string;
+    phone: string;
+    address: string;
+    currentPlan?: string;
+    featureTier?: 'basic' | 'premium';
+  }) {
+    const existing = await this.databaseService.repositories.AdminModel.findOne({
+      email: input.email,
+    });
+    if (existing) return null;
+
+    const crypto = require('crypto');
+    const bcrypt = require('bcrypt');
+
+    // Generate random password
+    const randomPassword = crypto.randomBytes(6).toString('hex');
+    const hashedPassword = await bcrypt.hash(randomPassword, 10);
+
+    // Create admin account
+    const admin = await this.databaseService.repositories.AdminModel.create({
+      name: input.adminName,
+      email: input.email,
+      phoneNo: input.phone,
+      password: hashedPassword,
+      role: 'admin',
+      isVerified: true,
+    });
+
+    // Create school record
+    const school = await this.databaseService.repositories.SchoolModel.create({
+      schoolName: input.schoolName,
+      schoolEmail: input.email,
+      contactPerson: input.adminName,
+      contactNumber: input.phone,
+      address: input.address,
+      currentPlan: input.currentPlan || 'Professional',
+      status: 'active',
+      featureTier: input.featureTier || 'basic',
+      admin: admin._id,
+    });
+
+    // Send WhatsApp welcome — fire-and-forget, never block activation on delivery
+    if (input.phone) {
+      this.whatsappService.sendSchoolWelcome(input.phone, input.adminName, input.schoolName)
+        .catch((err) => console.error('WhatsApp school welcome failed:', err));
+    }
+
+    // Send welcome email with credentials
+    try {
+      const mailer = this.getMailer();
+      await mailer.sendMail({
+        from: '"SmartVan Team" <' + process.env.EMAIL_USER + '>',
+        to: input.email,
+        subject: 'Welcome to SmartVan — Your Account is Ready!',
+        html: '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">' +
+          '<div style="background:#1B3B69;padding:28px;border-radius:12px 12px 0 0;text-align:center">' +
+          '<img src="https://app.smartvan.pk/favicon-192.png" alt="SmartVan" width="56" height="56" style="display:block;margin:0 auto 10px;border-radius:12px"><h1 style="color:#FEC610;margin:0;font-size:24px">Welcome to SmartVan!</h1>' +
+          '<p style="color:rgba(255,255,255,0.7);margin:8px 0 0">Your school transport management account is ready</p>' +
+          '</div>' +
+          '<div style="background:#f8f9fc;padding:28px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">' +
+          '<p style="color:#1a1a2e;font-size:15px">Dear <strong>' + input.adminName + '</strong>,</p>' +
+          '<p style="color:#6b7280;font-size:14px;line-height:1.7">Your SmartVan account for <strong>' + input.schoolName + '</strong> has been activated. Here are your login credentials:</p>' +
+          '<div style="background:#1B3B69;border-radius:10px;padding:20px;margin:20px 0;text-align:center">' +
+          '<p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0 0 4px">Login Email</p>' +
+          '<p style="color:#FEC610;font-size:18px;font-weight:700;margin:0 0 16px">' + input.email + '</p>' +
+          '<p style="color:rgba(255,255,255,0.6);font-size:12px;margin:0 0 4px">Temporary Password</p>' +
+          '<p style="color:#FEC610;font-size:24px;font-weight:800;letter-spacing:3px;margin:0">' + randomPassword + '</p>' +
+          '</div>' +
+          '<div style="text-align:center;margin:20px 0">' +
+          '<a href="https://app.smartvan.pk/auth/login" style="background:#FEC610;color:#1B3B69;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Login to Admin Panel →</a>' +
+          '</div>' +
+          '<p style="color:#6b7280;font-size:13px;line-height:1.7">Please change your password after first login. If you need any help, reply to this email or WhatsApp us.</p>' +
+          '<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">' +
+          '<p style="color:#9ca3af;font-size:12px;text-align:center">SmartVan — School Transport Intelligence | smartvan.pk</p>' +
+          '</div></div>',
+      });
+    } catch (emailErr) {
+      console.error('Welcome email failed:', emailErr.message);
+    }
+
+    return { admin, school, randomPassword };
+  }
+
+  /** Superadmin: create a school + admin account directly, bypassing the lead review flow. */
+  async createInstitutionDirectly(body: {
+    schoolName: string;
+    adminName: string;
+    email: string;
+    phone: string;
+    address?: string;
+    featureTier?: 'basic' | 'premium';
+  }) {
+    if (!body.schoolName || !body.adminName || !body.email || !body.phone) {
+      throw new BadRequestException('schoolName, adminName, email and phone are required');
+    }
+    const existing = await this.databaseService.repositories.AdminModel.findOne({ email: body.email });
+    if (existing) {
+      throw new BadRequestException('An admin account with this email already exists');
+    }
+
+    const result = await this.provisionSchoolAndAdmin({
+      schoolName: body.schoolName,
+      adminName: body.adminName,
+      email: body.email,
+      phone: body.phone,
+      address: body.address || '',
+      featureTier: body.featureTier || 'basic',
+    });
+
+    return {
+      message: 'Institution created — credentials emailed to the admin',
+      data: { schoolId: result?.school._id, adminId: result?.admin._id },
     };
   }
 
@@ -395,5 +454,44 @@ export class SchoolService {
     }
 
     return this.getSchoolFeatureSettings(schoolId);
+  }
+
+  /** Superadmin: per-feature adoption across every school — how many have
+   * it via their tier's default vs. a hand-tuned override. */
+  async getAppsModulesOverview() {
+    const schools = await this.databaseService.repositories.SchoolModel.find(
+      {},
+      { featureTier: 1, enabledFeatures: 1, disabledFeatures: 1 },
+    ).lean();
+
+    const adoption = FEATURE_KEYS.map((def) => {
+      let schoolCount = 0;
+      let viaOverrideCount = 0;
+      schools.forEach((s: any) => {
+        const has = hasFeature(s, def.key);
+        if (has) {
+          schoolCount += 1;
+          const tier = s.featureTier === 'premium' ? 'premium' : 'basic';
+          // On via an override when the tier's own default wouldn't grant it.
+          const tierDefaultHas = def.tier === 'basic' || tier === 'premium';
+          if (!tierDefaultHas) viaOverrideCount += 1;
+        }
+      });
+      return {
+        key: def.key,
+        label: def.label,
+        description: def.description,
+        tier: def.tier,
+        backendEnforced: def.backendEnforced,
+        schoolCount,
+        viaOverrideCount,
+        adoptionPercent: schools.length > 0 ? Math.round((schoolCount / schools.length) * 100) : 0,
+      };
+    });
+
+    return {
+      message: 'Apps & modules overview fetched',
+      data: { totalSchools: schools.length, features: adoption },
+    };
   }
 }
