@@ -2,8 +2,10 @@
 /** One WhatsApp SOS batch per trip per 5 minutes. */
 export const SOS_WHATSAPP_WINDOW_MS = 5 * 60_000;
 
+/** On by default; set SOS_WHATSAPP_ENABLED=false to turn it off. */
 export function sosWhatsappEnabled(raw: string | undefined = process.env.SOS_WHATSAPP_ENABLED): boolean {
-  return (raw || '').trim().toLowerCase() === 'true';
+  const v = (raw || '').trim().toLowerCase();
+  return !['false', '0', 'off', 'no'].includes(v);
 }
 
 const PK_MOBILE = /^(?:\+?92|0)?(3\d{9})$/;

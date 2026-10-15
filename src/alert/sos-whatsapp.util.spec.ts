@@ -33,11 +33,13 @@ describe('throttle + flag + params', () => {
     expect(isThrottled(new Date(now.getTime() - 5 * 60_000), now)).toBe(false);
     expect(isThrottled(null, now)).toBe(false);
   });
-  it('flag is off unless "true"', () => {
-    expect(sosWhatsappEnabled(undefined)).toBe(false);
+  it('flag is on by default, off only for false/0/off/no', () => {
+    expect(sosWhatsappEnabled(undefined)).toBe(true);
+    expect(sosWhatsappEnabled('')).toBe(true);
+    expect(sosWhatsappEnabled('true')).toBe(true);
     expect(sosWhatsappEnabled('false')).toBe(false);
-    expect(sosWhatsappEnabled('1')).toBe(false);
-    expect(sosWhatsappEnabled('TRUE')).toBe(true);
+    expect(sosWhatsappEnabled('FALSE')).toBe(false);
+    expect(sosWhatsappEnabled('0')).toBe(false);
   });
   it('body params match the approved smartvan_sos template (child, van, contact)', () => {
     expect(sosTemplateParams({ childNames: 'Fatima', vanNumber: 'BHJ-616', contactNumber: '+923002517280' }))

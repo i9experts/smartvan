@@ -172,7 +172,7 @@ if several, or if parents share a number) · `{{2}}` van number · `{{3}}` the
 school's contact number (fallback: driver's phone), as +92…. One message per
 parent, so each only sees their own child's name.
 
-Env: `SOS_WHATSAPP_ENABLED` (default `false`; set `true` to turn on),
+Env: `SOS_WHATSAPP_ENABLED` (default on; set `false` to turn off),
 `WHATSAPP_SOS_TEMPLATE` (default `smartvan_sos`),
 `WHATSAPP_SOS_TEMPLATE_LANG` (default `en`).
 

@@ -36,8 +36,8 @@ describe('SosWhatsappService', () => {
   const env = { ...process.env };
   afterEach(() => { process.env = { ...env }; });
 
-  it('does nothing when the flag is off', async () => {
-    delete process.env.SOS_WHATSAPP_ENABLED;
+  it('does nothing when the flag is set to false', async () => {
+    process.env.SOS_WHATSAPP_ENABLED = 'false';
     const { svc, whatsapp, updates, input } = setup();
     await svc.notifyParents(input);
     expect(whatsapp.sendTemplate).not.toHaveBeenCalled();
