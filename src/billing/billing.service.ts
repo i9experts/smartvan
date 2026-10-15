@@ -605,7 +605,11 @@ export class BillingService {
     if (!schoolAny.stripeCustomerId) {
       return {
         message: 'No Stripe customer on file for this school yet',
-        data: { subscriptionStatus: schoolAny.subscriptionStatus || 'no_subscription', premiumSubscriptionStatus: schoolAny.premiumSubscriptionStatus || 'inactive' },
+        data: {
+          subscriptionStatus: schoolAny.subscriptionStatus || 'no_subscription',
+          premiumSubscriptionStatus: schoolAny.premiumSubscriptionStatus || 'inactive',
+          diagnostic: { stripeCustomerId: null, subscriptionsFound: [] },
+        },
       };
     }
 
@@ -614,6 +618,19 @@ export class BillingService {
       status: 'all',
       limit: 10,
     });
+    // Surfaced back to the caller so a "synced but nothing changed" result
+    // is debuggable (e.g. the stored customer really has zero subscriptions
+    // in Stripe — wrong/stale stripeCustomerId — rather than a silent no-op
+    // that looks identical to "already up to date").
+    const diagnostic = {
+      stripeCustomerId: schoolAny.stripeCustomerId,
+      subscriptionsFound: subscriptions.data.map((s) => ({
+        id: s.id,
+        status: s.status,
+        type: (s.metadata as any)?.type || 'van_billing (untagged)',
+        created: new Date(s.created * 1000).toISOString(),
+      })),
+    };
 
     // Same customer can carry both a van_billing and a premium_feature_tier
     // subscription (see createCheckoutSessionForSchool/createPremiumCheckoutSession) —
@@ -651,7 +668,7 @@ export class BillingService {
 
     return {
       message: 'Synced from Stripe',
-      data: { subscriptionStatus, premiumSubscriptionStatus },
+      data: { subscriptionStatus, premiumSubscriptionStatus, diagnostic },
     };
   }
 
