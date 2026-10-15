@@ -85,3 +85,109 @@ on the trip (not only when `VanId` matches).
   socket `trackingLostAlert` on `school:<id>`, and `tripStatus
   { status: 'offline', lastSeenAt }` on the trip room. When locations resume:
   `trackingRestored` on the school room and normal `tripStatus` again.
+
+## 7. Trip history & trail (Oct 15)
+
+All endpoints need the JWT. "Today" is the calendar day in
+`DEFAULT_TIMEZONE` (Asia/Karachi), matched on the trip's end time.
+Trail points are stored on the trip itself and are never deleted (no TTL).
+When a trip ends the server saves `startedAt`, `endedAt`, `durationSeconds`
+and `distanceMeters` on it. Trips ended before this change get the same
+values computed on the fly from `tripStart`/`tripEnd`.
+
+Paging: `page` (default 1), `limit` (default 20, max 50). `scope=today|all`
+(default `all`). Newest first.
+
+### Driver — own completed trips
+
+`GET /driver/trips/completed?scope=today&page=1&limit=20`
+
+```json
+{ "success": true, "data": {
+  "items": [{
+    "id": "6710…", "routeName": "Gulshan Morning", "tripType": "pick",
+    "date": "2026-10-15",
+    "startedAt": "2026-10-15T02:00:04.000Z", "endedAt": "2026-10-15T02:41:10.000Z",
+    "durationSeconds": 2466, "distanceMeters": 11840,
+    "studentCount": 12, "pickedCount": 10, "droppedCount": 0,
+    "absentCount": 1, "noShowCount": 1
+  }],
+  "total": 37, "page": 1, "limit": 20, "hasMore": true } }
+```
+
+`GET /driver/trips/:id/details` → the item above plus:
+
+```json
+{ "stops": [{ "order": 1, "placeName": "House 12, Block 5", "lat": 24.9, "lng": 67.1,
+              "students": [{ "kidId": "…", "name": "Ayesha", "status": "picked", "at": "2026-10-15T02:10:00.000Z" }] }],
+  "alerts": [{ "type": "overspeed", "title": "Overspeeding", "message": "…", "at": "ISO" }],
+  "school": { "name": "City School", "lat": 24.86, "lng": 67.0 } }
+```
+
+Stop `status`: `picked | dropped | absent | no_show | pending`. Alert `type`:
+`sos | overspeed | traffic_delay | tracking_lost` (raised for the van between
+start and end). `school` is null if the school has no saved location.
+Errors: 404 `TRIP_NOT_FOUND`, 403 `TRIP_NOT_YOURS`.
+
+### Parent — trips that carried their children
+
+`GET /parent/trips/completed?scope=all&page=1&limit=20` — items have
+`id, routeName, tripType, date, startedAt, endedAt, durationSeconds,
+distanceMeters` and `children: [{ kidId, name, status, at }]` (own children
+only; no school-wide counts).
+
+`GET /parent/trips/:id/details` — same plus `driverName`, `vanNumber`,
+`school`. **Privacy:** other children's names, stop addresses and the stop
+list are never returned. 403 `TRIP_NOT_YOURS` if none of the parent's
+children was on that trip, or the trip is not finished.
+
+### Trail
+
+`GET /trips/:id/trail` (driver of the van, parent of a child on the trip,
+school admin/staff of that school, superadmin). Existing fields kept
+(`polyline`, `points` = count); new:
+
+```json
+{ "path": [{ "lat": 24.9, "lng": 67.1, "t": "2026-10-15T02:00:04.000Z" }],
+  "start": { "lat": 24.9, "lng": 67.1, "t": "…" }, "end": { "lat": 24.86, "lng": 67.0, "t": "…" },
+  "endedAt": "ISO|null" }
+```
+
+`path` is simplified (Douglas-Peucker) to at most 1000 points, keeping the
+first and last. For finished trips a parent must have a child on the trip
+(sharing only the van is no longer enough).
+
+## 8. SOS → WhatsApp to parents (Oct 15)
+
+When a driver sends `POST /alert/sos`, after the ADMIN
+alert is saved the server also sends a WhatsApp **template** to the parents of
+the kids on the driver's active trip (fallback: kids on the van's routes that
+run today). The SOS response does not wait for it. FCM push and the admin
+socket alert are unchanged.
+
+Env: `SOS_WHATSAPP_ENABLED` (default `false`), `WHATSAPP_SOS_TEMPLATE`,
+`WHATSAPP_SOS_TEMPLATE_LANG` (default `en`).
+
+Template body parameters, in order:
+`{{1}}` van number · `{{2}}` driver name · `{{3}}` time in PKT (`8:42 AM`) ·
+`{{4}}` `https://maps.google.com/?q=<lat>,<lng>`
+
+Phones are normalized to E.164 (`03001234567` → `+923001234567`) and
+de-duplicated. At most one batch per trip (or per van if the SOS has no trip)
+per 5 minutes; a second SOS inside the window is saved with
+`whatsappSkipped: "throttled"`.
+
+Result saved on the alert (notification) document:
+
+```json
+{ "tripId": "…", "whatsappBatchAt": "2026-10-15T03:42:00.000Z",
+  "whatsappNotifications": [
+    { "parentId": "…", "phone": "+923001234567", "status": "sent", "messageId": "wamid.HBg…", "sentAt": "ISO" },
+    { "parentId": "…", "phone": "+923009999999", "status": "failed", "error": "Template not approved", "sentAt": "ISO" },
+    { "parentId": "…", "phone": "", "status": "failed", "error": "invalid_phone", "sentAt": "ISO" }
+  ] }
+```
+
+`whatsappSkipped` is `throttled` or `no_recipients` when nothing was sent.
+Full numbers are stored on the alert but never written to logs (masked as
+`+92300***4567`).
