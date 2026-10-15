@@ -12,6 +12,8 @@ import { ScanStudentDto } from './dto/scan-student.dto';
 import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
 import { TripLiveService } from './trip-live.service';
 import { DatabaseService } from 'src/database/databaseservice';
+import { FeatureGuard } from 'src/auth/guard/feature.guard';
+import { RequireFeature } from 'src/auth/decorator/require-feature.decorator';
 
 @Controller('trips')
 export class TripController {
@@ -107,7 +109,8 @@ export class TripController {
 
   // ─── Pre-trip checklist (admin) ───────────────────────────────────────
 
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('safety_checklists')
   @Get('checklist/forAdmin')
   async getChecklistLogForAdmin(
     @Req() req: any,
@@ -133,7 +136,8 @@ export class TripController {
     );
   }
 
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('safety_checklists')
   @Get('checklist/complianceSummary')
   async getChecklistComplianceSummary(@Req() req: any) {
     this.requireFleetPermission(req.user);
@@ -176,7 +180,8 @@ export class TripController {
 
   // Driver-requested route optimization (advisory — doesn't affect the
   // trip itself). See TripService.optimizeRoute for how "saved" is computed.
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('route_optimization')
   @Post('optimizeRoute')
   async optimizeRoute(@Body() dto: OptimizeRouteDto, @Req() req: any) {
     return await this.tripService.optimizeRoute(req.user.userId, dto);
@@ -184,7 +189,8 @@ export class TripController {
 
   // Admin-facing log of individual optimize-route events (see getAnalytics
   // for the aggregate view this complements).
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('route_optimization')
   @Get('routeOptimization/forAdmin')
   async getRouteOptimizationLogForAdmin(
     @Req() req: any,

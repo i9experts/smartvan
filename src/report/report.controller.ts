@@ -5,6 +5,8 @@ import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { ReportService } from './report.service';
 import { DatabaseService } from 'src/database/databaseservice';
+import { FeatureGuard } from 'src/auth/guard/feature.guard';
+import { RequireFeature } from 'src/auth/decorator/require-feature.decorator';
 
 
 @Controller('report')
@@ -115,7 +117,8 @@ async getReportByIdByDriver
     return this.reportService.createDriverReport(body, driverId);
   }
 
-   @UseGuards(AuthGuard('jwt')) // Token guard
+   @UseGuards(AuthGuard('jwt'), FeatureGuard) // Token guard
+  @RequireFeature('complaints')
   @Get("getComplainsByAdmin")
   async getComplainsByAdmin(
     @Req() req: any,
@@ -132,7 +135,8 @@ async getReportByIdByDriver
   // Full, unpaginated roster for the printable complaint/issue register
   // report — a school admin's own school only (not the superadmin's
   // platform-wide view, which doesn't fit a single-school print format).
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('complaints')
   @Get('getComplaintRegisterReport')
   async getComplaintRegisterReport(@Req() req: any) {
     const caller = await this.resolveCallerForReports(req.user);
@@ -143,7 +147,8 @@ async getReportByIdByDriver
   }
 
   
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('complaints')
   @Post('changeComplaintStatus')
 async changeComplaintStatus(
   @Req() req: any,
@@ -160,7 +165,8 @@ async changeComplaintStatus(
   
 }
 
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(AuthGuard('jwt'), FeatureGuard)
+@RequireFeature('complaints')
 @Get('getComplaintById/:reportId')
 async getComplaintById(
   @Req() req: any,

@@ -15,6 +15,8 @@ import { AuthGuard } from '@nestjs/passport';
 import { RatingService } from './rating.service';
 import { RateTripDto } from './dto/rate-trip.dto';
 import { DatabaseService } from 'src/database/databaseservice';
+import { FeatureGuard } from 'src/auth/guard/feature.guard';
+import { RequireFeature } from 'src/auth/decorator/require-feature.decorator';
 
 @Controller('rating')
 export class RatingController {
@@ -65,7 +67,8 @@ export class RatingController {
 
   // Admin-only: a browsable, filterable log of every rating in the school
   // (vs. getRatingsForUser's per-person view).
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AuthGuard('jwt'), FeatureGuard)
+  @RequireFeature('ratings')
   @Get('getAllRatingsForSchool')
   async getAllRatingsForSchool(
     @Req() req: any,

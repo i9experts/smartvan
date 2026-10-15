@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import * as schema from './schema';
 import { DatabaseService } from './databaseservice'
+import { FeatureGuard } from 'src/auth/guard/feature.guard';
 
 @Global()
 @Module({
@@ -48,7 +49,7 @@ import { DatabaseService } from './databaseservice'
        { name: schema.KidAbsence.name, schema: schema.KidAbsenceSchema },
     ]),
   ],
-  exports: [MongooseModule, DatabaseService],
-  providers: [DatabaseService],
+  exports: [MongooseModule, DatabaseService, FeatureGuard],
+  providers: [DatabaseService, FeatureGuard],
 })
 export class DatabaseModule {}
