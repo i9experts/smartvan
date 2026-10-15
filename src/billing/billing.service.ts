@@ -1,8 +1,11 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException } from '@nestjs/common';
 import * as Stripe from 'stripe';
+import * as nodemailer from 'nodemailer';
 import { DatabaseService } from 'src/database/databaseservice';
 import { Types } from 'mongoose';
+import { AuditLogService } from 'src/audit-log/audit-log.service';
+import { sendWithTimeout } from 'src/common/send-with-timeout.util';
 
 const PRICE_IDS = {
   car_pkr: 'price_1ShP57GTlXYof3w6LpNPt7t7',
@@ -24,7 +27,10 @@ const VAN_PRICES = {
 export class BillingService {
   private stripe: Stripe;
 
-  constructor(private readonly databaseService: DatabaseService) {
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly auditLogService: AuditLogService,
+  ) {
     this.stripe = new (Stripe as any)(process.env.STRIPE_SECRET_KEY as string, {
       apiVersion: '2023-10-16' as any,
     });
@@ -76,7 +82,14 @@ export class BillingService {
     const adminObjectId = new Types.ObjectId(adminId);
     const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
     if (!school) throw new BadRequestException('School not found');
+    return this.calculateMonthlyBillForSchool(school);
+  }
 
+  // Same calculation, keyed off an already-resolved school document rather
+  // than an adminId — lets a superadmin-triggered action (e.g. sending a
+  // billing reminder to a specific unbilled school) reuse the exact same
+  // pricing logic as the school admin's own self-serve checkout.
+  private async calculateMonthlyBillForSchool(school: any) {
     // Include vans approval-linked from another school (the shared
     // driver/van-across-campuses case) — each school that actually uses
     // a shared van is billed for it independently.
@@ -129,7 +142,10 @@ export class BillingService {
     const adminObjectId = new Types.ObjectId(adminId);
     const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
     if (!school) throw new BadRequestException('School not found');
+    return this.createOrGetCustomerForSchool(school);
+  }
 
+  private async createOrGetCustomerForSchool(school: any) {
     const schoolAny = school as any;
 
     // Return existing customer
@@ -143,7 +159,7 @@ export class BillingService {
       email: schoolAny.schoolEmail,
       metadata: {
         schoolId: school._id.toString(),
-        adminId: adminId,
+        adminId: schoolAny.admin?.toString() || '',
       },
     });
 
@@ -158,8 +174,25 @@ export class BillingService {
 
   // Create checkout session
   async createCheckoutSession(adminId: string) {
-    const bill = await this.calculateMonthlyBill(adminId);
-    const { customerId } = await this.createOrGetCustomer(adminId);
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new BadRequestException('School not found');
+    return this.buildVanCheckoutSession(school);
+  }
+
+  // Superadmin-triggered equivalent of createCheckoutSession, keyed by
+  // schoolId instead of the caller's own JWT — used to send a specific
+  // unbilled school a payment link without that school's admin having to
+  // initiate it themselves (see sendBillingReminder below).
+  async createCheckoutSessionForSchool(schoolId: string) {
+    const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
+    if (!school) throw new BadRequestException('School not found');
+    return this.buildVanCheckoutSession(school);
+  }
+
+  private async buildVanCheckoutSession(school: any) {
+    const bill = await this.calculateMonthlyBillForSchool(school);
+    const { customerId } = await this.createOrGetCustomerForSchool(school);
 
     // Create line items based on van breakdown
     const lineItems: any[] = [];
@@ -179,6 +212,7 @@ export class BillingService {
     if (lineItems.length === 0) throw new BadRequestException('No active vans found for billing');
 
     const schoolId = bill.schoolId.toString();
+    const adminId = (school as any).admin?.toString() || '';
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
@@ -195,6 +229,74 @@ export class BillingService {
     });
 
     return { sessionUrl: session.url, sessionId: session.id, bill };
+  }
+
+  // Superadmin action: a school can have real, active vans without ever
+  // completing Stripe checkout (manually-provisioned/legacy accounts in
+  // particular) — this generates that school's payment link and emails it
+  // to the school's own contact address, so the superadmin doesn't have to
+  // chase it down manually (phone call, WhatsApp, etc) for every unbilled
+  // school surfaced by getPlanBreakdown()'s unbilledSchoolsWithVans.
+  async sendBillingReminder(schoolId: string, actor: { userId: string; email: string }) {
+    const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
+    if (!school) throw new BadRequestException('School not found');
+    const schoolAny = school as any;
+    if (!schoolAny.schoolEmail) throw new BadRequestException('This school has no contact email on file');
+
+    const { sessionUrl, bill } = await this.buildVanCheckoutSession(school);
+
+    const byPriceKey: Record<string, { label: string; count: number; amount: number; currency: string }> = {};
+    bill.breakdown.forEach((item: any) => {
+      if (!byPriceKey[item.priceKey]) byPriceKey[item.priceKey] = { label: item.label, count: 0, amount: 0, currency: item.currency };
+      byPriceKey[item.priceKey].count += 1;
+      byPriceKey[item.priceKey].amount += item.amount;
+    });
+    const rowsHtml = Object.values(byPriceKey)
+      .map((r) => `<tr><td style="padding:6px 0;color:#1a1a2e">${r.count} × ${r.label}</td><td style="padding:6px 0;text-align:right;color:#1a1a2e">${r.currency} ${r.amount.toLocaleString()}</td></tr>`)
+      .join('');
+
+    const mailer = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: Number(process.env.EMAIL_PORT),
+      secure: false,
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    });
+
+    const html =
+      '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">' +
+      '<div style="background:#1B3B69;padding:24px;border-radius:12px 12px 0 0"><img src="https://app.smartvan.pk/favicon-192.png" alt="SmartVan" width="56" height="56" style="display:block;margin:0 auto 10px;border-radius:12px">' +
+      '<h2 style="color:white;margin:0;text-align:center">Set up billing for your SmartVan fleet</h2></div>' +
+      '<div style="background:#f8f9fc;padding:24px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">' +
+      `<p style="color:#1a1a2e;font-size:14px;line-height:1.7">Hi, <strong>${schoolAny.schoolName}</strong> has <strong>${bill.totalVans} active van${bill.totalVans === 1 ? '' : 's'}</strong> running on SmartVan, but no payment method is on file yet. Here's the current monthly bill:</p>` +
+      `<table style="width:100%;border-collapse:collapse;margin:16px 0">${rowsHtml}<tr style="border-top:1.5px solid #e5e7eb"><td style="padding:10px 0;font-weight:700;color:#1a1a2e">Total / month</td><td style="padding:10px 0;text-align:right;font-weight:700;color:#1a1a2e">${bill.currency} ${bill.totalAmount.toLocaleString()}</td></tr></table>` +
+      `<div style="text-align:center;margin:24px 0"><a href="${sessionUrl}" style="background:#FFB800;color:#1B3B69;font-weight:700;padding:12px 28px;border-radius:10px;text-decoration:none;display:inline-block">Set Up Payment</a></div>` +
+      '<p style="color:#9ca3af;font-size:12px;text-align:center">This link expires in 24 hours. If it has expired, just log in to your SmartVan dashboard and open Billing to generate a new one.</p>' +
+      '<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">' +
+      '<p style="color:#9ca3af;font-size:12px;text-align:center">SmartVan — School Transport Intelligence | smartvan.pk</p>' +
+      '</div></div>';
+
+    await sendWithTimeout(
+      mailer.sendMail({
+        from: '"SmartVan Team" <' + process.env.EMAIL_USER + '>',
+        to: schoolAny.schoolEmail,
+        subject: `Action needed: set up billing for ${bill.totalVans} van${bill.totalVans === 1 ? '' : 's'} on SmartVan`,
+        html,
+      }).then(() => {}),
+      `billing reminder to ${schoolAny.schoolEmail}`,
+    );
+
+    this.auditLogService.record(
+      'billing_reminder_sent',
+      actor.userId,
+      actor.email,
+      'superadmin',
+      { schoolId: school._id.toString(), schoolName: schoolAny.schoolName, totalAmount: bill.totalAmount, currency: bill.currency, totalVans: bill.totalVans },
+    );
+
+    return {
+      message: `Billing reminder sent to ${schoolAny.schoolEmail}`,
+      data: { schoolEmail: schoolAny.schoolEmail, totalAmount: bill.totalAmount, currency: bill.currency, totalVans: bill.totalVans },
+    };
   }
 
   // ─── Premium feature tier — separate subscription from van billing ────
