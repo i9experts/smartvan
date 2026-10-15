@@ -11,6 +11,7 @@ import { info } from 'console';
 import { EventsGateway } from 'src/events/events.gateway';
 import { DriverSosDto } from './dto/driver-sos.dto';
 import { Cooldown } from './sos-rate-limit';
+import { SosWhatsappService } from './sos-whatsapp.service';
 
 const sosCooldown = new Cooldown(30_000);
 
@@ -25,7 +26,7 @@ export class alertService {
     private databaseService: DatabaseService,
     private firebaseAdminService: FirebaseAdminService,
     private readonly eventsGateway: EventsGateway,
-    
+    private readonly sosWhatsapp: SosWhatsappService,
 
 
 
@@ -807,6 +808,11 @@ async sendSosByDriver(driverId: string, dto: DriverSosDto) {
   };
   if (trip) this.eventsGateway.emitToRoom(trip._id.toString(), 'sosAlert', payload);
   this.eventsGateway.emitToSchool(schoolId, 'sosAlert', payload);
+
+  // WhatsApp template to parents — async, the response never waits for it.
+  void this.sosWhatsapp.notifyParents({
+    alertId: alert._id.toString(), trip, van, driverName, lat: dto.lat, lng: dto.lng, at: createdAt,
+  });
 
   // Push to parents of every kid on this trip / route (best-effort,
   // ignores the parent's notification toggle — this is a safety alert).

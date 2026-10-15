@@ -68,6 +68,42 @@ export class Notification {
   @Prop({ type: Date, default: Date.now })
   date?: Date;
 
+  // Driver SOS → WhatsApp to parents (see SosWhatsappService).
+  @Prop({ required: false, index: true })
+  tripId?: string;
+
+  /** tripId, or "van:<id>" when the SOS had no trip — one batch per key per 5 min. */
+  @Prop({ required: false, index: true })
+  whatsappBatchKey?: string;
+
+  @Prop({ type: Date, required: false })
+  whatsappBatchAt?: Date;
+
+  /** Why no batch was sent: "throttled" | "no_recipients". */
+  @Prop({ required: false })
+  whatsappSkipped?: string;
+
+  @Prop({
+    type: [{
+      parentId: String,
+      phone: String,
+      status: { type: String, enum: ['sent', 'failed'] },
+      messageId: String,
+      error: String,
+      sentAt: Date,
+      _id: false,
+    }],
+    default: undefined,
+  })
+  whatsappNotifications?: {
+    parentId: string;
+    phone: string;
+    status: 'sent' | 'failed';
+    messageId?: string;
+    error?: string;
+    sentAt: Date;
+  }[];
+
 }
 
 

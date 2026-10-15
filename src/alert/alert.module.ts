@@ -8,12 +8,14 @@ import { EventsModule } from 'src/events/events.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AlertSeen, AlertSeenSchema } from './alert-seen.schema';
 import { AdminAlertsUnreadService } from './admin-alerts-unread.service';
+import { SosWhatsappService } from './sos-whatsapp.service';
+import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
 
 @Module({
   
   controllers: [AlertController],
-  providers: [alertService, AdminAlertsUnreadService],
+  providers: [alertService, AdminAlertsUnreadService, SosWhatsappService],
   exports: [alertService], // agar kahin aur use karna ho to
-    imports: [FirebaseAdminModule, EventsModule, MongooseModule.forFeature([{ name: AlertSeen.name, schema: AlertSeenSchema }])],
+    imports: [WhatsappModule, FirebaseAdminModule, EventsModule, MongooseModule.forFeature([{ name: AlertSeen.name, schema: AlertSeenSchema }])],
 })
 export class AlertModule {}

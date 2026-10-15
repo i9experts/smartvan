@@ -71,6 +71,39 @@ export class WhatsappService {
     }
   }
 
+  /**
+   * Generic template send (body parameters only). Never logs the recipient
+   * number; the caller decides what to record. `to` may be E.164 (+92…).
+   */
+  async sendTemplate(
+    to: string,
+    templateName: string,
+    languageCode: string,
+    bodyParams: string[],
+  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    try {
+      const response = await axios.post(
+        this.apiUrl,
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: this.formatPhone(to),
+          type: 'template',
+          template: {
+            name: templateName,
+            language: { code: languageCode },
+            components: [{ type: 'body', parameters: bodyParams.map((text) => ({ type: 'text', text })) }],
+          },
+        },
+        { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }, timeout: 10_000 },
+      );
+      return { success: true, messageId: response.data?.messages?.[0]?.id };
+    } catch (e: any) {
+      const err = e?.response?.data?.error;
+      return { success: false, error: String(err?.message || e?.message || 'send failed').slice(0, 300) };
+    }
+  }
+
   async sendTextMessage(to: string, message: string): Promise<any> {
     try {
       const response = await axios.post(
