@@ -336,6 +336,60 @@ export class BillingService {
     };
   }
 
+  // Superadmin override: a school can pay through a channel that never
+  // creates a Stripe Subscription (a manually-sent Stripe invoice/payment
+  // link, a bank transfer, etc) — real money changed hands, but there's no
+  // Subscription object for sync-from-stripe to ever find, no matter how
+  // thoroughly it searches. This sets the status directly instead, fully
+  // audit-logged with a required note since it's bypassing the normal
+  // Stripe-verified path. Deliberately never talks to Stripe — a future
+  // "Sync from Stripe" finding zero subscriptions leaves this untouched
+  // (see syncSubscriptionStatusFromStripe: it only ever writes a field
+  // when it actually finds a matching subscription).
+  async manuallyMarkPaid(
+    schoolId: string,
+    input: { vanBilling?: boolean; premium?: boolean; note: string },
+    actor: { userId: string; email: string },
+  ) {
+    const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
+    if (!school) throw new BadRequestException('School not found');
+    if (!input.vanBilling && !input.premium) {
+      throw new BadRequestException('Select at least one of van billing or Premium to mark as paid');
+    }
+    if (!input.note?.trim()) {
+      throw new BadRequestException('A note explaining how this payment was actually collected is required');
+    }
+
+    const schoolAny = school as any;
+    const update: any = {};
+    if (input.vanBilling) {
+      update.subscriptionStatus = 'active';
+      update.currentPlan = 'Paid';
+    }
+    if (input.premium) {
+      update.premiumSubscriptionStatus = 'active';
+      update.featureTier = 'premium';
+    }
+
+    await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: update });
+
+    this.auditLogService.record(
+      'billing_manually_marked_paid',
+      actor.userId,
+      actor.email,
+      'superadmin',
+      { schoolId: school._id.toString(), schoolName: schoolAny.schoolName, ...update, note: input.note.trim() },
+    );
+
+    return {
+      message: 'Billing status updated manually',
+      data: {
+        subscriptionStatus: update.subscriptionStatus ?? schoolAny.subscriptionStatus ?? 'no_subscription',
+        premiumSubscriptionStatus: update.premiumSubscriptionStatus ?? schoolAny.premiumSubscriptionStatus ?? 'inactive',
+      },
+    };
+  }
+
   // ─── Premium feature tier — separate subscription from van billing ────
 
   private getPremiumPrice(currency: string): { amount: number; currency: string } {
