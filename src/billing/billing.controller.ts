@@ -116,6 +116,26 @@ export class BillingController {
     });
   }
 
+  // Override for a payment that never created a Stripe Subscription (a
+  // manually-sent Stripe invoice/payment link, a bank transfer, etc) — see
+  // manuallyMarkPaid's comment. Deliberately separate from sync-from-stripe,
+  // which only ever reflects what Stripe's own subscription data says.
+  @UseGuards(AuthGuard('jwt'))
+  @Post('schools/:schoolId/mark-paid')
+  async markPaid(
+    @Req() req: any,
+    @Param('schoolId') schoolId: string,
+    @Body() body: { vanBilling?: boolean; premium?: boolean; note: string },
+  ) {
+    if (!req.user || req.user.role !== 'superadmin') {
+      throw new ForbiddenException('Only superadmins can access this API');
+    }
+    return this.billingService.manuallyMarkPaid(schoolId, body, {
+      userId: req.user.userId,
+      email: req.user.email,
+    });
+  }
+
   @Post('webhook')
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,
