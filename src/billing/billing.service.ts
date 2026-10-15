@@ -558,6 +558,94 @@ export class BillingService {
     return results;
   }
 
+  // Maps Stripe's own subscription.status vocabulary onto the simpler
+  // internal vocabulary the rest of the app (webhook handler, frontend
+  // badges) already uses — 'active'/'payment_failed'/'inactive'.
+  private mapStripeStatus(status: Stripe.Subscription.Status): 'active' | 'payment_failed' | 'inactive' {
+    if (status === 'active' || status === 'trialing') return 'active';
+    if (status === 'past_due' || status === 'unpaid') return 'payment_failed';
+    return 'inactive';
+  }
+
+  // Self-serve version of syncSubscriptionStatusFromStripe — a school admin
+  // reconciling their own school, keyed off their own JWT instead of a
+  // superadmin-supplied schoolId. The billing page calls this on every
+  // visit so a school's own status/Premium unlock catches up with Stripe
+  // immediately, without waiting on a webhook or a superadmin's manual sync.
+  async syncMySubscriptionFromStripe(adminId: string) {
+    const adminObjectId = new Types.ObjectId(adminId);
+    const school = await this.databaseService.repositories.SchoolModel.findOne({ admin: adminObjectId });
+    if (!school) throw new BadRequestException('School not found');
+    return this.syncSubscriptionStatusFromStripe(school._id.toString());
+  }
+
+  /**
+   * Superadmin: re-reads a school's subscriptions directly from Stripe and
+   * writes the result back to the school document. Webhooks are the normal
+   * path for keeping subscriptionStatus/premiumSubscriptionStatus current,
+   * but webhook delivery isn't guaranteed (a misconfigured signing secret,
+   * a transient outage, Stripe exhausting its retries) — this is the
+   * on-demand fallback so a confirmed Stripe payment is never permanently
+   * stuck showing as unbilled in the dashboard.
+   */
+  async syncSubscriptionStatusFromStripe(schoolId: string) {
+    const school = await this.databaseService.repositories.SchoolModel.findById(schoolId);
+    if (!school) throw new BadRequestException('School not found');
+    const schoolAny = school as any;
+
+    if (!schoolAny.stripeCustomerId) {
+      return {
+        message: 'No Stripe customer on file for this school yet',
+        data: { subscriptionStatus: schoolAny.subscriptionStatus || 'no_subscription', premiumSubscriptionStatus: schoolAny.premiumSubscriptionStatus || 'inactive' },
+      };
+    }
+
+    const subscriptions = await this.stripe.subscriptions.list({
+      customer: schoolAny.stripeCustomerId,
+      status: 'all',
+      limit: 10,
+    });
+
+    // Same customer can carry both a van_billing and a premium_feature_tier
+    // subscription (see createCheckoutSessionForSchool/createPremiumCheckoutSession) —
+    // route each by its metadata.type tag, most-recently-created wins within a type.
+    let vanSub: Stripe.Subscription | undefined;
+    let premiumSub: Stripe.Subscription | undefined;
+    for (const sub of subscriptions.data) {
+      const type = (sub.metadata as any)?.type || 'van_billing';
+      if (type === 'premium_feature_tier') {
+        if (!premiumSub || sub.created > premiumSub.created) premiumSub = sub;
+      } else if (!vanSub || sub.created > vanSub.created) {
+        vanSub = sub;
+      }
+    }
+
+    const update: any = {};
+    let subscriptionStatus = schoolAny.subscriptionStatus || 'no_subscription';
+    let premiumSubscriptionStatus = schoolAny.premiumSubscriptionStatus || 'inactive';
+
+    if (vanSub) {
+      subscriptionStatus = this.mapStripeStatus(vanSub.status);
+      update.subscriptionStatus = subscriptionStatus;
+      update.currentPlan = subscriptionStatus === 'active' ? 'Paid' : 'Free';
+    }
+    if (premiumSub) {
+      premiumSubscriptionStatus = this.mapStripeStatus(premiumSub.status);
+      update.premiumSubscriptionStatus = premiumSubscriptionStatus;
+      update.premiumStripeSubscriptionId = premiumSub.id;
+      if (premiumSubscriptionStatus === 'active') update.featureTier = 'premium';
+    }
+
+    if (Object.keys(update).length > 0) {
+      await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: update });
+    }
+
+    return {
+      message: 'Synced from Stripe',
+      data: { subscriptionStatus, premiumSubscriptionStatus },
+    };
+  }
+
   /**
    * Superadmin: platform-wide plan breakdown — counts and estimated MRR per
    * feature tier (Basic/Premium), plus van-billing subscription health

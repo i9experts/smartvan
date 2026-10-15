@@ -49,6 +49,16 @@ export class BillingController {
     return this.billingService.createCheckoutSession(req.user.userId);
   }
 
+  // Self-serve reconciliation — called by the school admin's own billing
+  // page on every visit so their status/Premium unlock reflects Stripe
+  // immediately, independent of webhook delivery.
+  @UseGuards(AuthGuard('jwt'))
+  @Post('sync-my-status')
+  async syncMyStatus(@Req() req: any) {
+    this.requireAdmin(req.user);
+    return this.billingService.syncMySubscriptionFromStripe(req.user.userId);
+  }
+
   // Separate subscription from the per-van billing above — unlocks the
   // Premium feature tier (Analytics, AI Route Optimization, Safety
   // Checklist Compliance, Ratings Log, Complaints & Reports, Fee
@@ -76,6 +86,18 @@ export class BillingController {
       throw new ForbiddenException('Only superadmins can access this API');
     }
     return this.billingService.getPlanBreakdown();
+  }
+
+  // On-demand reconciliation: re-reads a school's real subscription state
+  // from Stripe and writes it back, for when a webhook delivery was missed
+  // (see syncSubscriptionStatusFromStripe's comment for why that happens).
+  @UseGuards(AuthGuard('jwt'))
+  @Post('schools/:schoolId/sync-from-stripe')
+  async syncFromStripe(@Req() req: any, @Param('schoolId') schoolId: string) {
+    if (!req.user || req.user.role !== 'superadmin') {
+      throw new ForbiddenException('Only superadmins can access this API');
+    }
+    return this.billingService.syncSubscriptionStatusFromStripe(schoolId);
   }
 
   // Emails a specific school's billing contact a payment link for their
