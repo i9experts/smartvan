@@ -153,6 +153,23 @@ export class BillingService {
       return { customerId: schoolAny.stripeCustomerId };
     }
 
+    // A Stripe customer for this school may already exist from an earlier
+    // checkout whose DB write-back never landed on this exact school
+    // document (e.g. the school was re-provisioned/duplicated afterward) —
+    // reuse it by email rather than silently minting a second, orphaned
+    // customer and letting the first one's payment history go untracked.
+    if (schoolAny.schoolEmail) {
+      const existing = await this.stripe.customers.list({ email: schoolAny.schoolEmail, limit: 1 });
+      if (existing.data.length > 0) {
+        const customerId = existing.data[0].id;
+        await this.databaseService.repositories.SchoolModel.updateOne(
+          { _id: school._id },
+          { $set: { stripeCustomerId: customerId } },
+        );
+        return { customerId };
+      }
+    }
+
     // Create new Stripe customer
     const customer = await this.stripe.customers.create({
       name: schoolAny.schoolName,
@@ -602,7 +619,28 @@ export class BillingService {
     if (!school) throw new BadRequestException('School not found');
     const schoolAny = school as any;
 
-    if (!schoolAny.stripeCustomerId) {
+    let stripeCustomerId: string | null = schoolAny.stripeCustomerId || null;
+    let recovered = false;
+
+    // No customer on file doesn't necessarily mean "never paid" — a
+    // checkout can succeed on Stripe's side while the DB write-back that
+    // links it to this exact school document never lands (e.g. the school
+    // was re-provisioned/duplicated after the original checkout). Before
+    // reporting "never went through checkout", look for an existing Stripe
+    // customer under this school's own email and adopt it if found.
+    if (!stripeCustomerId && schoolAny.schoolEmail) {
+      const found = await this.stripe.customers.list({ email: schoolAny.schoolEmail, limit: 1 });
+      if (found.data.length > 0) {
+        stripeCustomerId = found.data[0].id;
+        recovered = true;
+        await this.databaseService.repositories.SchoolModel.updateOne(
+          { _id: school._id },
+          { $set: { stripeCustomerId } },
+        );
+      }
+    }
+
+    if (!stripeCustomerId) {
       return {
         message: 'No Stripe customer on file for this school yet',
         data: {
@@ -614,7 +652,7 @@ export class BillingService {
     }
 
     const subscriptions = await this.stripe.subscriptions.list({
-      customer: schoolAny.stripeCustomerId,
+      customer: stripeCustomerId,
       status: 'all',
       limit: 10,
     });
@@ -623,7 +661,8 @@ export class BillingService {
     // in Stripe — wrong/stale stripeCustomerId — rather than a silent no-op
     // that looks identical to "already up to date").
     const diagnostic = {
-      stripeCustomerId: schoolAny.stripeCustomerId,
+      stripeCustomerId,
+      recoveredByEmail: recovered,
       subscriptionsFound: subscriptions.data.map((s) => ({
         id: s.id,
         status: s.status,
