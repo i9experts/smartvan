@@ -110,6 +110,15 @@ async getSchoolById(@Param('id') id: string) {
 }
 
 @UseGuards(AuthGuard('jwt'))
+@Post('broadcast')
+async broadcast(@Req() req: any, @Body() body: { subject: string; message: string }) {
+  if (!req.user || req.user.role !== 'superadmin') {
+    throw new ForbiddenException('Only superadmins can access this API');
+  }
+  return this.adminService.broadcastToAllAdmins(body?.subject, body?.message);
+}
+
+@UseGuards(AuthGuard('jwt'))
 @Get('GetSuperAdminOverview')
 async getSuperAdminOverview(@Req() req: any) {
   if (!req.user || req.user.role !== 'superadmin') {
@@ -124,7 +133,8 @@ async getAllSchoolsBySuperAdmin(
   @Req() req: any,
   @Query('page') page: string,
   @Query('limit') limit: string,
-  @Query('search') search?: string
+  @Query('search') search?: string,
+  @Query('plan') plan?: 'basic' | 'premium',
 ) {
   // JWT user check
   if (!req.user || req.user.role !== 'superadmin') {
@@ -136,7 +146,7 @@ async getAllSchoolsBySuperAdmin(
   const limitNumber = limit ? parseInt(limit) : 10;
 
   // service call
-  return this.adminService.getAllSchoolsBySuperAdmin(pageNumber, limitNumber, search);
+  return this.adminService.getAllSchoolsBySuperAdmin(pageNumber, limitNumber, search, plan);
 }
 
 

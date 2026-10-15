@@ -98,6 +98,16 @@ export class SchoolController {
   }
 
   @UseGuards(AuthGuard('jwt'))
+  @Post('create-institution')
+  async createInstitution(
+    @Req() req: any,
+    @Body() body: { schoolName: string; adminName: string; email: string; phone: string; address?: string; featureTier?: 'basic' | 'premium' },
+  ) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.createInstitutionDirectly(body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
   @Patch('leads/:id/status')
   async updateLeadStatus(
     @Req() req: any,
@@ -131,6 +141,13 @@ export class SchoolController {
   async getSchoolFeatureSettings(@Req() req: any, @Param('id') id: string) {
     this.requireSuperadmin(req.user);
     return this.schoolService.getSchoolFeatureSettings(id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('apps-modules-overview')
+  async getAppsModulesOverview(@Req() req: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getAppsModulesOverview();
   }
 
   @UseGuards(AuthGuard('jwt'))

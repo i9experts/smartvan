@@ -444,4 +444,47 @@ export class BillingService {
     }
     return results;
   }
+
+  /**
+   * Superadmin: platform-wide plan breakdown — counts and estimated MRR per
+   * feature tier (Basic/Premium), plus van-billing subscription health
+   * (active/payment_failed/no_subscription/cancelled). These are two
+   * separate Stripe subscriptions per school (see handleWebhook's comment
+   * on why they're tracked as distinct fields), so the breakdown reports
+   * them side by side rather than conflating them into one "MRR" figure.
+   */
+  async getPlanBreakdown() {
+    const schools = await this.databaseService.repositories.SchoolModel.find(
+      {},
+      { featureTier: 1, premiumSubscriptionStatus: 1, subscriptionStatus: 1, currency: 1 },
+    ).lean();
+
+    const byTier = { basic: 0, premium: 0 };
+    const byVanBillingStatus: Record<string, number> = {};
+    let premiumActiveCount = 0;
+
+    schools.forEach((s: any) => {
+      const tier = s.featureTier === 'premium' ? 'premium' : 'basic';
+      byTier[tier] += 1;
+      if (s.premiumSubscriptionStatus === 'active') premiumActiveCount += 1;
+
+      const vanStatus = s.subscriptionStatus || 'no_subscription';
+      byVanBillingStatus[vanStatus] = (byVanBillingStatus[vanStatus] || 0) + 1;
+    });
+
+    const premiumPricePkr = Number(process.env.PREMIUM_PLAN_PRICE_PKR) || 0;
+    const estimatedPremiumMrrPkr = premiumActiveCount * premiumPricePkr;
+
+    return {
+      message: 'Plan breakdown fetched',
+      data: {
+        totalSchools: schools.length,
+        byTier,
+        premiumActiveCount,
+        estimatedPremiumMrrPkr,
+        premiumPricePkr,
+        byVanBillingStatus,
+      },
+    };
+  }
 }
