@@ -145,6 +145,27 @@ export class BillingService {
     return this.createOrGetCustomerForSchool(school);
   }
 
+  // Before the dedup logic below existed, every checkout attempt that found
+  // stripeCustomerId empty (the exact bug this is working around) minted a
+  // brand new Stripe customer under the same email — so a school can have
+  // several Stripe customers sharing one address, only one of which
+  // actually holds the paid subscription. Taking "the first match" is not
+  // good enough; this checks each candidate for subscriptions and prefers
+  // whichever one actually has them.
+  private async findStripeCustomerIdByEmail(email: string): Promise<string | null> {
+    const candidates = await this.stripe.customers.list({ email, limit: 10 });
+    if (candidates.data.length === 0) return null;
+    if (candidates.data.length === 1) return candidates.data[0].id;
+
+    for (const c of candidates.data) {
+      const subs = await this.stripe.subscriptions.list({ customer: c.id, status: 'all', limit: 1 });
+      if (subs.data.length > 0) return c.id;
+    }
+    // None of them have any subscription — fall back to the most recently
+    // created (Stripe's default list order), as good a guess as any.
+    return candidates.data[0].id;
+  }
+
   private async createOrGetCustomerForSchool(school: any) {
     const schoolAny = school as any;
 
@@ -159,9 +180,8 @@ export class BillingService {
     // reuse it by email rather than silently minting a second, orphaned
     // customer and letting the first one's payment history go untracked.
     if (schoolAny.schoolEmail) {
-      const existing = await this.stripe.customers.list({ email: schoolAny.schoolEmail, limit: 1 });
-      if (existing.data.length > 0) {
-        const customerId = existing.data[0].id;
+      const customerId = await this.findStripeCustomerIdByEmail(schoolAny.schoolEmail);
+      if (customerId) {
         await this.databaseService.repositories.SchoolModel.updateOne(
           { _id: school._id },
           { $set: { stripeCustomerId: customerId } },
@@ -629,9 +649,9 @@ export class BillingService {
     // reporting "never went through checkout", look for an existing Stripe
     // customer under this school's own email and adopt it if found.
     if (!stripeCustomerId && schoolAny.schoolEmail) {
-      const found = await this.stripe.customers.list({ email: schoolAny.schoolEmail, limit: 1 });
-      if (found.data.length > 0) {
-        stripeCustomerId = found.data[0].id;
+      const found = await this.findStripeCustomerIdByEmail(schoolAny.schoolEmail);
+      if (found) {
+        stripeCustomerId = found;
         recovered = true;
         await this.databaseService.repositories.SchoolModel.updateOne(
           { _id: school._id },
@@ -651,11 +671,34 @@ export class BillingService {
       };
     }
 
-    const subscriptions = await this.stripe.subscriptions.list({
+    let subscriptions = await this.stripe.subscriptions.list({
       customer: stripeCustomerId,
       status: 'all',
       limit: 10,
     });
+
+    // The stored customer itself can be the wrong one — e.g. the empty,
+    // orphaned customer that an earlier recovery attempt (or the original
+    // pre-dedup bug) saved — in which case stripeCustomerId being "set"
+    // would otherwise permanently block ever re-checking by email again.
+    // If it has zero subscriptions, widen the search across every Stripe
+    // customer under this school's email and switch if a better one turns up.
+    if (subscriptions.data.length === 0 && schoolAny.schoolEmail) {
+      const better = await this.findStripeCustomerIdByEmail(schoolAny.schoolEmail);
+      if (better && better !== stripeCustomerId) {
+        const betterSubs = await this.stripe.subscriptions.list({ customer: better, status: 'all', limit: 10 });
+        if (betterSubs.data.length > 0) {
+          stripeCustomerId = better;
+          subscriptions = betterSubs;
+          recovered = true;
+          await this.databaseService.repositories.SchoolModel.updateOne(
+            { _id: school._id },
+            { $set: { stripeCustomerId } },
+          );
+        }
+      }
+    }
+
     // Surfaced back to the caller so a "synced but nothing changed" result
     // is debuggable (e.g. the stored customer really has zero subscriptions
     // in Stripe — wrong/stale stripeCustomerId — rather than a silent no-op
