@@ -5,6 +5,8 @@ import {
   ExecutionContext,
   ForbiddenException,
   UnauthorizedException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Types } from 'mongoose';
@@ -43,12 +45,21 @@ export class FeatureGuard implements CanActivate {
 
     if (!hasFeature(school, requiredFeature)) {
       const def = FEATURE_KEYS.find((f) => f.key === requiredFeature);
-      throw new ForbiddenException({
-        code: 'FEATURE_LOCKED',
-        feature: requiredFeature,
-        featureLabel: def?.label || requiredFeature,
-        message: `"${def?.label || requiredFeature}" is a Premium feature. Ask your SmartVan admin to upgrade to unlock it.`,
-      });
+      // Deliberately NOT a 403: the admin frontend's axios interceptor
+      // treats every 403 as "no permission at all" and hard-redirects to
+      // /no-access, which would hijack this before the page's own
+      // "Unlock Premium" paywall ever gets to render. 402 Payment Required
+      // is semantically exactly this situation, and the frontend lets it
+      // through untouched for page-level handling.
+      throw new HttpException(
+        {
+          code: 'FEATURE_LOCKED',
+          feature: requiredFeature,
+          featureLabel: def?.label || requiredFeature,
+          message: `"${def?.label || requiredFeature}" is a Premium feature. Ask your SmartVan admin to upgrade to unlock it.`,
+        },
+        HttpStatus.PAYMENT_REQUIRED,
+      );
     }
     return true;
   }
