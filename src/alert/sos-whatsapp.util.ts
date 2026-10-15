@@ -1,6 +1,4 @@
 /* eslint-disable prettier/prettier */
-import * as moment from 'moment-timezone';
-
 /** One WhatsApp SOS batch per trip per 5 minutes. */
 export const SOS_WHATSAPP_WINDOW_MS = 5 * 60_000;
 
@@ -30,21 +28,27 @@ export function maskPhone(phone: string): string {
   return `${phone.slice(0, 6)}***${phone.slice(-4)}`;
 }
 
-export interface SosRecipient { parentId: string; phone: string }
+export interface SosRecipient { parentId: string; phone: string; childNames: string }
 
-/** Parents → unique recipients by normalized number; invalid numbers are returned separately. */
-export function collectRecipients(parents: { _id: any; phoneNo?: string }[]): { recipients: SosRecipient[]; invalid: string[] } {
-  const seen = new Set<string>();
-  const recipients: SosRecipient[] = [];
+/**
+ * Parents → unique recipients by normalized number (children of parents
+ * sharing a number are merged into one message); invalid numbers are
+ * returned separately.
+ */
+export function collectRecipients(
+  parents: { _id: any; phoneNo?: string; kidNames?: string[] }[],
+): { recipients: SosRecipient[]; invalid: string[] } {
+  const byPhone = new Map<string, SosRecipient & { names: string[] }>();
   const invalid: string[] = [];
   for (const p of parents) {
     const phone = toE164(p.phoneNo);
     const parentId = p._id.toString();
     if (!phone) { invalid.push(parentId); continue; }
-    if (seen.has(phone)) continue;
-    seen.add(phone);
-    recipients.push({ parentId, phone });
+    const entry = byPhone.get(phone) || { parentId, phone, childNames: '', names: [] };
+    for (const n of p.kidNames || []) if (n && !entry.names.includes(n)) entry.names.push(n);
+    byPhone.set(phone, entry);
   }
+  const recipients = [...byPhone.values()].map(({ names, ...r }) => ({ ...r, childNames: names.join(', ') || 'your child' }));
   return { recipients, invalid };
 }
 
@@ -52,15 +56,11 @@ export function isThrottled(lastBatchAt: Date | null | undefined, now: Date, win
   return !!lastBatchAt && now.getTime() - new Date(lastBatchAt).getTime() < windowMs;
 }
 
-export function mapsLink(lat: number, lng: number): string {
-  return `https://maps.google.com/?q=${lat},${lng}`;
-}
-
-export function pktTime(at: Date, tz = process.env.DEFAULT_TIMEZONE || 'Asia/Karachi'): string {
-  return moment(at).tz(tz).format('h:mm A');
-}
-
-/** Template body params, in order: van number, driver name, time (PKT), maps link. */
-export function sosTemplateParams(a: { vanNumber: string; driverName: string; at: Date; lat: number; lng: number }): string[] {
-  return [a.vanNumber || 'N/A', a.driverName || 'Driver', pktTime(a.at), mapsLink(a.lat, a.lng)];
+/**
+ * Body params of the approved `smartvan_sos` template, in order:
+ * {{1}} child name(s), {{2}} van number, {{3}} contact number.
+ * "Alert regarding {{1}} on van {{2}}. Contact number: {{3}}. Please respond immediately."
+ */
+export function sosTemplateParams(a: { childNames: string; vanNumber: string; contactNumber: string }): string[] {
+  return [a.childNames || 'your child', a.vanNumber || 'N/A', a.contactNumber || 'N/A'];
 }

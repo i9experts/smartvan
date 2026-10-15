@@ -5,7 +5,7 @@ import { Types } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import {
-  collectRecipients, isThrottled, maskPhone, sosTemplateParams, sosWhatsappEnabled, SOS_WHATSAPP_WINDOW_MS,
+  collectRecipients, isThrottled, maskPhone, sosTemplateParams, toE164, sosWhatsappEnabled, SOS_WHATSAPP_WINDOW_MS,
 } from './sos-whatsapp.util';
 
 export interface SosWhatsappInput {
@@ -13,6 +13,7 @@ export interface SosWhatsappInput {
   trip: any | null;
   van: any | null;
   driverName: string;
+  driverPhone?: string;
   lat: number;
   lng: number;
   at: Date;
@@ -43,11 +44,7 @@ export class SosWhatsappService {
 
   private async run(input: SosWhatsappInput) {
     if (!sosWhatsappEnabled()) return;
-    const template = (process.env.WHATSAPP_SOS_TEMPLATE || '').trim();
-    if (!template) {
-      this.logger.warn('SOS_WHATSAPP_ENABLED is on but WHATSAPP_SOS_TEMPLATE is not set; skipping');
-      return;
-    }
+    const template = (process.env.WHATSAPP_SOS_TEMPLATE || 'smartvan_sos').trim();
     const lang = (process.env.WHATSAPP_SOS_TEMPLATE_LANG || 'en').trim();
     const repos = this.databaseService.repositories;
     const { trip, van, alertId, at } = input;
@@ -78,8 +75,9 @@ export class SosWhatsappService {
       return;
     }
 
-    const params = sosTemplateParams({ vanNumber: van?.carNumber || '', driverName: input.driverName, at, lat: input.lat, lng: input.lng });
+    const contactNumber = await this.contactNumber(trip?.schoolId || van?.schoolId, input.driverPhone);
     for (const r of recipients) {
+      const params = sosTemplateParams({ childNames: r.childNames, vanNumber: van?.carNumber || '', contactNumber });
       const res = await this.whatsapp.sendTemplate(r.phone, template, lang, params);
       results.push({
         parentId: r.parentId,
@@ -95,7 +93,16 @@ export class SosWhatsappService {
     this.logger.log(`SOS WhatsApp alert ${alertId}: ${results.filter((x) => x.status === 'sent').length}/${results.length} sent`);
   }
 
-  /** Parents of kids on the active trip; else of kids on the van's routes running today. */
+  /** The school's contact number (fallback: the driver's phone), as E.164 when possible. */
+  private async contactNumber(schoolId: string | undefined, driverPhone?: string): Promise<string> {
+    const school: any = schoolId && Types.ObjectId.isValid(schoolId)
+      ? await this.databaseService.repositories.SchoolModel.findById(schoolId, { contactNumber: 1 }).lean()
+      : null;
+    const raw = school?.contactNumber || driverPhone || '';
+    return toE164(raw) || String(raw);
+  }
+
+  /** Parents (with their kids' names) of kids on the active trip; else of kids on the van's routes running today. */
   private async parentsToNotify(trip: any | null, van: any | null, at: Date): Promise<any[]> {
     const repos = this.databaseService.repositories;
     const kidIds = new Set<string>();
@@ -116,10 +123,16 @@ export class SosWhatsappService {
 
     const kids: any[] = await repos.KidModel.find(
       { _id: { $in: [...kidIds].filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id)) } },
-      { parentId: 1 },
+      { parentId: 1, fullname: 1 },
     ).lean();
-    const parentIds = [...new Set(kids.filter((k) => k.parentId).map((k) => k.parentId.toString()))];
-    if (!parentIds.length) return [];
-    return repos.parentModel.find({ _id: { $in: parentIds }, isDelete: false }, { phoneNo: 1 }).lean();
+    const namesByParent = new Map<string, string[]>();
+    for (const k of kids) {
+      if (!k.parentId) continue;
+      const id = k.parentId.toString();
+      namesByParent.set(id, [...(namesByParent.get(id) || []), k.fullname].filter(Boolean));
+    }
+    if (!namesByParent.size) return [];
+    const parents: any[] = await repos.parentModel.find({ _id: { $in: [...namesByParent.keys()] }, isDelete: false }, { phoneNo: 1 }).lean();
+    return parents.map((p) => ({ ...p, kidNames: namesByParent.get(p._id.toString()) || [] }));
   }
 }

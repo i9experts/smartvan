@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { collectRecipients, isThrottled, maskPhone, pktTime, sosTemplateParams, sosWhatsappEnabled, toE164 } from './sos-whatsapp.util';
+import { collectRecipients, isThrottled, maskPhone, sosTemplateParams, sosWhatsappEnabled, toE164 } from './sos-whatsapp.util';
 
 describe('toE164', () => {
   it.each([
@@ -10,17 +10,17 @@ describe('toE164', () => {
 });
 
 describe('collectRecipients', () => {
-  it('normalizes, dedupes by number, and reports invalid ones', () => {
+  it('normalizes, dedupes by number (merging child names), and reports invalid ones', () => {
     const { recipients, invalid } = collectRecipients([
-      { _id: 'p1', phoneNo: '0300-2147180' },
-      { _id: 'p2', phoneNo: '+923002147180' }, // same number as p1
-      { _id: 'p3', phoneNo: '03111234567' },
-      { _id: 'p4', phoneNo: 'n/a' },
+      { _id: 'p1', phoneNo: '0300-2147180', kidNames: ['Fatima'] },
+      { _id: 'p2', phoneNo: '+923002147180', kidNames: ['Ali'] }, // same number as p1
+      { _id: 'p3', phoneNo: '03111234567', kidNames: ['Sara'] },
+      { _id: 'p4', phoneNo: 'n/a', kidNames: ['X'] },
       { _id: 'p5' },
     ]);
     expect(recipients).toEqual([
-      { parentId: 'p1', phone: '+923002147180' },
-      { parentId: 'p3', phone: '+923111234567' },
+      { parentId: 'p1', phone: '+923002147180', childNames: 'Fatima, Ali' },
+      { parentId: 'p3', phone: '+923111234567', childNames: 'Sara' },
     ]);
     expect(invalid).toEqual(['p4', 'p5']);
   });
@@ -39,10 +39,9 @@ describe('throttle + flag + params', () => {
     expect(sosWhatsappEnabled('1')).toBe(false);
     expect(sosWhatsappEnabled('TRUE')).toBe(true);
   });
-  it('body params in order, time in PKT', () => {
-    expect(pktTime(now, 'Asia/Karachi')).toBe('8:42 AM');
-    expect(sosTemplateParams({ vanNumber: 'KHI-1', driverName: 'Ali', at: now, lat: 24.86, lng: 67.01 }))
-      .toEqual(['KHI-1', 'Ali', '8:42 AM', 'https://maps.google.com/?q=24.86,67.01']);
+  it('body params match the approved smartvan_sos template (child, van, contact)', () => {
+    expect(sosTemplateParams({ childNames: 'Fatima', vanNumber: 'BHJ-616', contactNumber: '+923002517280' }))
+      .toEqual(['Fatima', 'BHJ-616', '+923002517280']);
   });
   it('masks phone', () => expect(maskPhone('+923002147180')).toBe('+92300***7180'));
 });

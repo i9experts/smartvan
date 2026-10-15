@@ -237,7 +237,10 @@ export class WhatsappService {
     } catch (e: any) { return { success: false, error: e?.response?.data }; }
   }
 
-  async sendSosAlert(to: string, parentName: string, studentName: string, vanNumber: string, schoolPhone: string): Promise<any> {
+  // Approved template smartvan_sos has 3 body params:
+  // "Alert regarding {{1}} on van {{2}}. Contact number: {{3}}. Please respond immediately."
+  // parentName is kept in the signature for existing callers but is not part of the template.
+  async sendSosAlert(to: string, _parentName: string, studentName: string, vanNumber: string, schoolPhone: string): Promise<any> {
     try {
       const response = await axios.post(this.apiUrl, {
         messaging_product: 'whatsapp',
@@ -249,7 +252,6 @@ export class WhatsappService {
           components: [{
             type: 'body',
             parameters: [
-              { type: 'text', text: parentName },
               { type: 'text', text: studentName },
               { type: 'text', text: vanNumber },
               { type: 'text', text: schoolPhone },

@@ -811,7 +811,7 @@ async sendSosByDriver(driverId: string, dto: DriverSosDto) {
 
   // WhatsApp template to parents — async, the response never waits for it.
   void this.sosWhatsapp.notifyParents({
-    alertId: alert._id.toString(), trip, van, driverName, lat: dto.lat, lng: dto.lng, at: createdAt,
+    alertId: alert._id.toString(), trip, van, driverName, driverPhone: driver.phoneNo, lat: dto.lat, lng: dto.lng, at: createdAt,
   });
 
   // Push to parents of every kid on this trip / route (best-effort,

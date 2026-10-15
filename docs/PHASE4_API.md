@@ -165,12 +165,16 @@ the kids on the driver's active trip (fallback: kids on the van's routes that
 run today). The SOS response does not wait for it. FCM push and the admin
 socket alert are unchanged.
 
-Env: `SOS_WHATSAPP_ENABLED` (default `false`), `WHATSAPP_SOS_TEMPLATE`,
-`WHATSAPP_SOS_TEMPLATE_LANG` (default `en`).
+Uses the approved WABA template `smartvan_sos` (English, utility):
+"Alert regarding {{1}} on van {{2}}. Contact number: {{3}}. Please respond immediately."
+Body parameters, in order: `{{1}}` the parent's child name(s) (comma-separated
+if several, or if parents share a number) · `{{2}}` van number · `{{3}}` the
+school's contact number (fallback: driver's phone), as +92…. One message per
+parent, so each only sees their own child's name.
 
-Template body parameters, in order:
-`{{1}}` van number · `{{2}}` driver name · `{{3}}` time in PKT (`8:42 AM`) ·
-`{{4}}` `https://maps.google.com/?q=<lat>,<lng>`
+Env: `SOS_WHATSAPP_ENABLED` (default `false`; set `true` to turn on),
+`WHATSAPP_SOS_TEMPLATE` (default `smartvan_sos`),
+`WHATSAPP_SOS_TEMPLATE_LANG` (default `en`).
 
 Phones are normalized to E.164 (`03001234567` → `+923001234567`) and
 de-duplicated. At most one batch per trip (or per van if the SOS has no trip)
