@@ -46,6 +46,7 @@ import { parseQrPayload } from 'src/Kid/kid-qr.util';
 import { absenceCovers, todayIn } from 'src/Kid/kid-absence.util';
 import { SubmitChecklistDto } from './dto/pretrip-checklist.dto';
 import { TripLiveService } from './trip-live.service';
+import { applyEndStats } from './trip-history.util';
 import { resolveStopPoint } from 'src/route/stop-point.util';
 import {
   checklistDate,
@@ -1326,6 +1327,7 @@ async endTrip(driverId, dto: EndTripDto) {
     lat,
     long,
   };
+  applyEndStats(trip);
 
   await trip.save();
 
@@ -1548,6 +1550,7 @@ async startTrip(driverId: string, createTripDto: CreateTripDto) {
       long: createTripDto.long,
     },
 
+    startedAt: now,
     status: 'ongoing',
 
     kids: [],
@@ -1735,6 +1738,7 @@ async endTripForDrop(driverId, dto: EndTripDto) {
     lat,
     long,
   };
+  applyEndStats(trip);
 
   await trip.save();
 

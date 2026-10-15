@@ -89,6 +89,21 @@ export class Trip {
   @Prop({ type: Number, default: 0 })
   distanceMeters: number;
 
+  // Set when the trip ends (see applyEndStats). startedAt/endedAt mirror
+  // tripStart.startTime / tripEnd.endTime so history can sort and filter on them.
+  @Prop({ type: Date })
+  startedAt?: Date;
+
+  @Prop({ type: Date })
+  endedAt?: Date;
+
+  @Prop({ type: Number, default: 0 })
+  durationSeconds: number;
+
+  // Driver who ran the trip (vanId alone is wrong once a van changes driver).
+  @Prop({ type: String, index: true })
+  driverId?: string;
+
   @Prop({ type: Number, default: 0 })
   maxSpeedKmh: number;
 
