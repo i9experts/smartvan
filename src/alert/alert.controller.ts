@@ -583,6 +583,15 @@ async sendSosByDriver(@Req() req: any, @Body() body: DriverSosDto) {
 @UseGuards(AuthGuard('jwt'))
 @Get('admin/unreadCount')
 async adminUnreadCount(@Req() req: any) {
+  // The Alerts nav item (and its badge) only ever renders for 'admin'
+  // and school_staff with view_alerts — a superadmin isn't scoped to a
+  // single school, so there's no count to compute. Rendered from a
+  // layout every authenticated role loads (the dashboard sidebar), this
+  // must resolve gracefully rather than throw for a role it was never
+  // meant to serve.
+  if (req.user.role === 'superadmin') {
+    return { success: true, data: { unread: 0 } };
+  }
   this.requireAlertsPermission(req.user);
   const adminId = await this.resolveEffectiveAdminId(req.user);
   return this.unreadService.unreadCount(req.user.userId, adminId);
@@ -592,6 +601,9 @@ async adminUnreadCount(@Req() req: any) {
 @UseGuards(AuthGuard('jwt'))
 @Post('admin/markSeen')
 async adminMarkSeen(@Req() req: any) {
+  if (req.user.role === 'superadmin') {
+    return { success: true };
+  }
   this.requireAlertsPermission(req.user);
   const adminId = await this.resolveEffectiveAdminId(req.user);
   return this.unreadService.markSeen(req.user.userId, adminId);
