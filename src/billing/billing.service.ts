@@ -666,7 +666,7 @@ export class BillingService {
         data: {
           subscriptionStatus: schoolAny.subscriptionStatus || 'no_subscription',
           premiumSubscriptionStatus: schoolAny.premiumSubscriptionStatus || 'inactive',
-          diagnostic: { stripeCustomerId: null, subscriptionsFound: [] },
+          diagnostic: { stripeCustomerId: null, searchedEmail: schoolAny.schoolEmail || null, subscriptionsFound: [] },
         },
       };
     }
@@ -706,6 +706,7 @@ export class BillingService {
     const diagnostic = {
       stripeCustomerId,
       recoveredByEmail: recovered,
+      searchedEmail: schoolAny.schoolEmail || null,
       subscriptionsFound: subscriptions.data.map((s) => ({
         id: s.id,
         status: s.status,
