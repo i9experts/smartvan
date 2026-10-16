@@ -59,6 +59,10 @@ export class Trip {
         lat: { type: Number, required: true },
         long: { type: Number, required: true },
         time: { type: Date, default: Date.now },
+        // Which phone and tracking session sent the point (newer apps only).
+        deviceId: { type: String },
+        sessionId: { type: String },
+        accuracy: { type: Number },
       },
     ],
     default: [],
@@ -67,7 +71,30 @@ export class Trip {
     lat: number;
     long: number;
     time?: Date;
+    deviceId?: string;
+    sessionId?: string;
+    accuracy?: number;
   }[];
+
+  // The one tracking session allowed to write this trip's location. A new
+  // claim (driver starts/resumes the trip) replaces the old one.
+  @Prop({ type: Object, default: null })
+  trackingSession?: { sessionId: string; deviceId?: string; claimedAt: Date } | null;
+
+  // A fix rejected for impossible speed, waiting for confirmation (see location-guard.util).
+  @Prop({ type: Object, default: null })
+  pendingJump?: { lat: number; long: number; time: Date; count: number } | null;
+
+  // Written by scripts/clean-trip-trails.js: the trail and distance with
+  // glitch points removed. The original `locations` are never touched.
+  @Prop({ type: [{ lat: Number, long: Number, time: Date }], default: undefined })
+  locationsCleaned?: { lat: number; long: number; time?: Date }[];
+
+  @Prop({ type: Number })
+  distanceMetersCleaned?: number;
+
+  @Prop({ type: Date })
+  cleanedAt?: Date;
 
   // End point of trip
   @Prop({ type: Object })

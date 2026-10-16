@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Types } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
@@ -14,6 +14,7 @@ import { isValidPoint, resolveStopPoint } from 'src/route/stop-point.util';
 import { stopStateOf } from './optimize-route.util';
 import { isMoving, nextTrafficState } from './traffic-delay.util';
 import { cleanBackfill, trackingLostMinutes } from './tracking-health.util';
+import { evaluatePoint, GeoSample, PendingJump, readTrackingMeta, sessionAllows, TRACKING_SESSION_REPLACED } from './location-guard.util';
 
 const TZ = process.env.DEFAULT_TIMEZONE || 'Asia/Karachi';
 const PLAN_CACHE_MS = 90_000;
@@ -200,7 +201,7 @@ export class TripLiveService {
    */
   async trail(user: any, tripId: string) {
     const { trip } = await this.loadViewableTrip(user, tripId);
-    const all = toTrailPoints(trip.locations || []);
+    const all = toTrailPoints(trip.locations || [], trip.locationsCleaned);
     const pts: [number, number][] = all.map((p) => [p.lat, p.lng]);
     const sampled = downsample(pts, 2000);
     const path = simplifyTrail(all, 1000);
@@ -221,6 +222,36 @@ export class TripLiveService {
     };
   }
 
+  // ─── Tracking session ───────────────────────────────────────────────
+
+  /**
+   * The driver's phone says it tracks this trip now (the driver started or
+   * resumed it in the app). Any earlier session is replaced: its next
+   * location gets 409 TRACKING_SESSION_REPLACED and that app stops.
+   */
+  async claimSession(driverId: string, tripId: string, body: { sessionId?: unknown; deviceId?: unknown }) {
+    if (!Types.ObjectId.isValid(tripId)) throw new NotFoundException('Trip not found');
+    const { sessionId, deviceId } = readTrackingMeta(body);
+    if (!sessionId) throw new BadRequestException({ success: false, code: 'SESSION_ID_REQUIRED', message: 'sessionId is required' });
+    const repos = this.databaseService.repositories;
+    const trip: any = await repos.TripModel.findById(tripId, { vanId: 1, status: 1, trackingSession: 1 }).lean();
+    if (!trip) throw new NotFoundException('Trip not found');
+    const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }, { _id: 1 }).lean();
+    if (!van || van._id.toString() !== trip.vanId) throw new ForbiddenException('This trip does not belong to your van');
+    if (trip.status !== 'ongoing') {
+      throw new BadRequestException({ success: false, code: 'TRIP_NOT_ONGOING', message: 'Trip is not in progress' });
+    }
+    const previous: string | undefined = trip.trackingSession?.sessionId;
+    const replaced = !!previous && previous !== sessionId;
+    await repos.TripModel.updateOne(
+      { _id: trip._id },
+      { $set: { trackingSession: { sessionId, ...(deviceId ? { deviceId } : {}), claimedAt: new Date() }, pendingJump: null } },
+    );
+    this.eventsGateway.setTrackingSession(tripId, sessionId);
+    if (replaced) this.eventsGateway.emitToRoom(tripId, 'trackingSessionReplaced', { tripId, replacedSessionId: previous });
+    return { success: true, data: { sessionId, replaced } };
+  }
+
   // ─── Offline backfill ───────────────────────────────────────────────
 
   /**
@@ -230,13 +261,18 @@ export class TripLiveService {
    * (they are in the past). Accepted for the ongoing trip, or up to 30 min
    * after it ended.
    */
-  async backfill(driverId: string, tripId: string, body: { points?: unknown }) {
+  async backfill(driverId: string, tripId: string, body: { points?: unknown; sessionId?: unknown; deviceId?: unknown }) {
     if (!Types.ObjectId.isValid(tripId)) throw new NotFoundException('Trip not found');
     const repos = this.databaseService.repositories;
-    const trip: any = await repos.TripModel.findById(tripId, { vanId: 1, status: 1, createdAt: 1, tripStart: 1, tripEnd: 1 }).lean();
+    const trip: any = await repos.TripModel.findById(tripId, { vanId: 1, status: 1, createdAt: 1, tripStart: 1, tripEnd: 1, trackingSession: 1 }).lean();
     if (!trip) throw new NotFoundException('Trip not found');
     const van: any = await repos.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }, { _id: 1 }).lean();
     if (!van || van._id.toString() !== trip.vanId) throw new ForbiddenException('This trip does not belong to your van');
+
+    const meta = readTrackingMeta(body);
+    if (!sessionAllows(trip.trackingSession, meta.sessionId)) {
+      throw new ConflictException({ success: false, code: TRACKING_SESSION_REPLACED, message: 'This trip is now tracked from another device' });
+    }
 
     const now = new Date();
     const endedAt = trip.tripEnd?.endTime ? new Date(trip.tripEnd.endTime) : null;
@@ -245,14 +281,36 @@ export class TripLiveService {
     }
     const from = new Date(trip.tripStart?.startTime || trip.createdAt);
     const to = endedAt && endedAt < now ? endedAt : now;
-    const points = cleanBackfill(body?.points, { from: new Date(from.getTime() - 60_000), to: new Date(to.getTime() + 60_000) });
+    // Sorted by the phone's own timestamps; then the same quality filters as
+    // live points, point by point within the batch.
+    const sorted = cleanBackfill(body?.points, { from: new Date(from.getTime() - 60_000), to: new Date(to.getTime() + 60_000) });
+    const points: typeof sorted = [];
+    let prev: GeoSample | null = null;
+    let pending: PendingJump | null = null;
+    for (const p of sorted) {
+      const v = evaluatePoint({ lat: p.lat, long: p.long, time: p.time, accuracy: p.accuracy }, prev, new Date(to.getTime() + 60_000), pending);
+      pending = v.pending;
+      if (!v.accept) continue;
+      points.push(p);
+      prev = p;
+    }
     if (!points.length) return { success: true, data: { accepted: 0 } };
 
     const lastTime = points[points.length - 1].time;
     await repos.TripModel.updateOne(
       { _id: trip._id },
       {
-        $push: { locations: { $each: points.map((p) => ({ lat: p.lat, long: p.long, time: p.time })), $sort: { time: 1 } } },
+        $push: {
+          locations: {
+            $each: points.map((p) => ({
+              lat: p.lat, long: p.long, time: p.time,
+              ...(meta.deviceId ? { deviceId: meta.deviceId } : {}),
+              ...(meta.sessionId ? { sessionId: meta.sessionId } : {}),
+              ...(p.accuracy !== undefined ? { accuracy: p.accuracy } : {}),
+            })),
+            $sort: { time: 1 },
+          },
+        },
         $max: { lastLocationAt: lastTime },
       },
     );

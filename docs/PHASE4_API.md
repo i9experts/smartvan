@@ -213,3 +213,71 @@ stops first, so their numbers on the map do not change; `route-plan` follows
 it. Response `data.stops` lists only the remaining stops in the new order, plus
 `tripType`, `origin`, `destination`, distance/time totals and savings. 400 when
 the trip is not ongoing or no stops are left.
+
+## 10. One tracking source per trip (Oct 16)
+
+Why: a second phone (or simulator) logged in as the same driver wrote its own
+fixed position into the same trip, so the trail zigzagged between two places
+and the distance doubled. A trip now has **one tracking session**, and every
+fix passes quality filters.
+
+### Tracking session
+
+`POST /trips/:tripId/tracking-session` (driver) `{ sessionId, deviceId? }` →
+`{ success, data: { sessionId, replaced } }`. Call it when the driver
+**starts or resumes** the trip in the app; `sessionId` is a fresh random id
+per start, `deviceId` is stable per phone. The new session **replaces** the
+old one (`replaced: true`) and the trip room gets
+`trackingSessionReplaced { tripId, replacedSessionId }`. 400
+`SESSION_ID_REQUIRED` / `TRIP_NOT_ONGOING`, 403 if the trip is not the
+driver's.
+
+Every location request may carry `sessionId` (and `deviceId`):
+
+- `POST /trips/updateLocation/:tripId`, `POST /trips/:tripId/locations/batch`
+  and socket `updateLocation`.
+- If it differs from the trip's current session: **409
+  `TRACKING_SESSION_REPLACED`** (HTTP) or socket `error { code:
+  'TRACKING_SESSION_REPLACED', msg }`. The point is not stored or relayed;
+  the app must stop tracking and tell the driver "Trip continued on another
+  device".
+- **No `sessionId` (older apps) is still accepted** — only the filters below
+  apply. A trip nobody claimed accepts any session id.
+
+### Filters (live HTTP, socket relay and batch backfill)
+
+A point is dropped — not stored, not relayed, not counted in `distanceMeters` — when:
+
+| Rule | Value |
+|---|---|
+| `accuracy` (metres, optional) | > 50 |
+| timestamp | more than 30 s in the future |
+| timestamp | older than the last accepted point (live points only) |
+| implied speed from the last accepted point | > 150 km/h |
+
+Optional body fields: `accuracy` (m), `time` (ISO, the phone's own clock —
+used as the point's time when valid, else server time), `sessionId`,
+`deviceId`. A dropped live point answers **200**
+`{ success: true, data: { accepted: false, reason: 'accuracy' | 'future' | 'stale' | 'speed' } }`
+so the app neither retries nor buffers it. If the *last accepted* point was
+the odd one, five consecutive dropped-for-speed points that agree with each
+other re-anchor the trail (kept in `pendingJump` on the trip).
+
+Batch backfill is merged by the phone's timestamps (`$sort: { time: 1 }`) and
+runs the accuracy / speed filters point by point inside the batch.
+
+New per-point fields stored from now on: `deviceId`, `sessionId`, `accuracy`.
+
+### Trail order
+
+`GET /trips/:id/trail` (and `path`) sorts by the point's own time, not insert
+order. If a trip has `locationsCleaned` (see below) it is used instead of
+`locations`, and history uses `distanceMetersCleaned` when present.
+
+### Old trips
+
+`scripts/diagnose-trip-trail.js <tripId>` (read-only) explains a bad trail;
+`scripts/clean-trip-trails.js` is a dry run by default and with `--apply`
+writes `locationsCleaned`, `distanceMetersCleaned`, `cleanedAt` — the original
+`locations` / `distanceMeters` are never changed. Both read `MONGODB_URI` from
+the environment and never print it; run `npm run build` first.

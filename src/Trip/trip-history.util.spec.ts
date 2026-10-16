@@ -79,3 +79,31 @@ describe('parent privacy helpers', () => {
     expect(countOutcomes(o)).toEqual({ pickedCount: 1, droppedCount: 0, absentCount: 1, noShowCount: 1 });
   });
 });
+
+describe('toTrailPoints order', () => {
+  const { toTrailPoints } = require('./trip-history.util');
+  it('sorts by device time, not insert order', () => {
+    const pts = toTrailPoints([
+      { lat: 3, long: 3, time: new Date('2026-10-15T10:00:03Z') },
+      { lat: 1, long: 1, time: new Date('2026-10-15T10:00:01Z') },
+      { lat: 2, long: 2, time: new Date('2026-10-15T10:00:02Z') },
+    ]);
+    expect(pts.map((p: any) => p.lat)).toEqual([1, 2, 3]);
+  });
+  it('a point without a time stays after the one before it', () => {
+    const pts = toTrailPoints([
+      { lat: 1, long: 1, time: new Date('2026-10-15T10:00:01Z') },
+      { lat: 2, long: 2 },
+      { lat: 3, long: 3, time: new Date('2026-10-15T10:00:03Z') },
+    ]);
+    expect(pts.map((p: any) => p.lat)).toEqual([1, 2, 3]);
+  });
+  it('prefers the cleaned trail when the cleanup script wrote one', () => {
+    const pts = toTrailPoints(
+      [{ lat: 9, long: 9, time: new Date('2026-10-15T10:00:01Z') }],
+      [{ lat: 1, long: 1, time: new Date('2026-10-15T10:00:01Z') }],
+    );
+    expect(pts.map((p: any) => p.lat)).toEqual([1]);
+    expect(toTrailPoints([{ lat: 9, long: 9 }], []).map((p: any) => p.lat)).toEqual([9]);
+  });
+});

@@ -11,6 +11,7 @@ export interface BackfillPoint {
   long: number;
   time: Date;
   speedKmh?: number;
+  accuracy?: number;
 }
 
 /**
@@ -36,11 +37,13 @@ export function cleanBackfill(
     if (seen.has(t.getTime())) continue;
     seen.add(t.getTime());
     const speed = Number(p?.speed);
+    const accuracy = Number(p?.accuracy);
     out.push({
       lat,
       long: lng,
       time: t,
       ...(Number.isFinite(speed) && speed >= 0 && speed < 70 ? { speedKmh: Math.round(speed * 3.6) } : {}),
+      ...(p?.accuracy != null && Number.isFinite(accuracy) && accuracy >= 0 ? { accuracy } : {}),
     });
   }
   out.sort((a, b) => a.time.getTime() - b.time.getTime());

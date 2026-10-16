@@ -43,6 +43,19 @@ export class TripController {
     return this.tripLive.backfill(req.user.userId, tripId, body);
   }
 
+  /**
+   * Driver: "this phone tracks this trip now". Replaces any earlier session;
+   * the replaced phone gets 409 TRACKING_SESSION_REPLACED on its next point.
+   * Body { sessionId, deviceId? }. Called when the driver starts or resumes
+   * the trip from the app.
+   */
+  @UseGuards(AuthGuard('jwt'))
+  @Post(':tripId/tracking-session')
+  async claimTrackingSession(@Param('tripId') tripId: string, @Body() body: any, @Req() req: any) {
+    if (req.user?.userType !== 'driver') throw new UnauthorizedException('Only drivers can track trips');
+    return this.tripLive.claimSession(req.user.userId, tripId, body);
+  }
+
   /** Path the van has driven so far on this trip (encoded polyline). */
   @UseGuards(AuthGuard('jwt'))
   @Get(':tripId/trail')
@@ -290,7 +303,7 @@ export class TripController {
   @Post('updateLocation/:tripId')
   async updateLocation(
     @Param('tripId') tripId: string,
-    @Body() body: { lat: number; lng: number; speed?: number },
+    @Body() body: { lat: number; lng: number; speed?: number; accuracy?: number; time?: string; sessionId?: string; deviceId?: string },
     @Req() req: any,
   ) {
     return this.tripService.updateLocationAndBroadcastETA(
@@ -299,6 +312,7 @@ export class TripController {
       Number(body.lat),
       Number(body.lng),
       body.speed,
+      body,
     );
   }
 

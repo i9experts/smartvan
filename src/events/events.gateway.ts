@@ -18,6 +18,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { Server } from 'socket.io';
 import { CustomSocket } from './custom-socket.interface';
 import { Types } from 'mongoose';
+import { evaluatePoint, GeoSample, PendingJump, readTrackingMeta, sessionAllows, TRACKING_SESSION_REPLACED } from 'src/Trip/location-guard.util';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 
@@ -148,6 +149,21 @@ afterInit(server: Server) {
     this.server.to(socket.id).emit('joinedSchoolAlerts', { schoolId });
   }
 
+  /** tripId → the tracking session allowed to write it (set when the driver claims it). */
+  private readonly sessionByTrip = new Map<string, string>();
+  /** tripId → last relayed fix and a fix waiting for confirmation, for the live-relay quality filter. */
+  private readonly relayState = new Map<string, { prev: GeoSample | null; pending: PendingJump | null }>();
+
+  setTrackingSession(tripId: string, sessionId: string) {
+    this.sessionByTrip.set(tripId, sessionId);
+    this.relayState.delete(tripId);
+    EventsGateway.trimMap(this.sessionByTrip);
+  }
+
+  private static trimMap(m: Map<string, unknown>, max = 500) {
+    while (m.size > max) m.delete(m.keys().next().value as string);
+  }
+
   @SubscribeMessage('startTrip')
   async startTrip(
     @MessageBody() data: { tripId: string },
@@ -192,7 +208,7 @@ afterInit(server: Server) {
     if (!verified.has(room)) {
       const driverId = socket.decoded_token?.userId || socket.decoded_token?.sub;
       const [trip, van]: any[] = await Promise.all([
-        this.databaseService.repositories.TripModel.findById(room, { vanId: 1, status: 1 }).lean(),
+        this.databaseService.repositories.TripModel.findById(room, { vanId: 1, status: 1, trackingSession: 1 }).lean(),
         this.databaseService.repositories.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }, { _id: 1 }).lean(),
       ]);
       if (!trip || !van || trip.vanId !== van._id.toString() || trip.status !== 'ongoing') {
@@ -200,8 +216,30 @@ afterInit(server: Server) {
         return;
       }
       verified.add(room);
+      const claimed = (trip as any).trackingSession?.sessionId;
+      if (claimed && !this.sessionByTrip.has(room)) this.sessionByTrip.set(room, claimed);
     }
     if (!socket.rooms.has(room)) await socket.join(room);
+
+    // Only the tracking session that owns the trip may relay its position;
+    // an older app (no sessionId) is still let through to the filters.
+    const meta = readTrackingMeta(data);
+    const current = this.sessionByTrip.get(room);
+    if (!sessionAllows(current ? { sessionId: current } : null, meta.sessionId)) {
+      socket.emit('error', { code: TRACKING_SESSION_REPLACED, msg: 'This trip is now tracked from another device' });
+      return;
+    }
+    // Same quality filters as the stored trail, so a glitchy fix never moves the parents' van.
+    const now = new Date();
+    const state = this.relayState.get(room) || { prev: null, pending: null };
+    const verdict = evaluatePoint({ lat, long: lng, time: meta.time, accuracy: meta.accuracy }, state.prev, now, state.pending);
+    if (!verdict.accept) {
+      this.relayState.set(room, { prev: state.prev, pending: verdict.pending });
+      EventsGateway.trimMap(this.relayState);
+      return;
+    }
+    this.relayState.set(room, { prev: { lat, long: lng, time: meta.time }, pending: null });
+    EventsGateway.trimMap(this.relayState);
 
     const speedMs = Number(data?.speed);
     const speedKmh = Number.isFinite(speedMs) && speedMs >= 0 && speedMs < 70 ? Math.round(speedMs * 3.6) : null;

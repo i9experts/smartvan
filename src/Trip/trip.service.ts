@@ -23,6 +23,7 @@ import { Kid } from 'src/Kid/kid.schema';
 import { EventsGateway } from 'src/events/events.gateway';
 import { findUndroppedKidIds, requiresDropConfirmation } from './trip-safety.util';
 import { decideScanAction } from './scan-action.util';
+import { decideLocationWrite, readTrackingMeta, TRACKING_SESSION_REPLACED } from './location-guard.util';
 import {
   etaPushToSend,
   MAX_SEGMENT_METERS,
@@ -2291,6 +2292,7 @@ async generateGraphData(
     lat: number,
     lng: number,
     speedMs?: number,
+    extra?: any,
   ) {
     if (typeof lat !== 'number' || typeof lng !== 'number' ||
         Math.abs(lat) > 90 || Math.abs(lng) > 180) {
@@ -2309,16 +2311,43 @@ async generateGraphData(
       throw new UnauthorizedException('This trip does not belong to your van');
     }
 
-    // ── 2. Point, distance, speed ────────────────────────────────────────
+    // ── 2. Who is writing, is the fix usable, point, distance, speed ─────
     const now = new Date();
+    const meta = readTrackingMeta(extra, now);
+    const decision = decideLocationWrite(
+      trip,
+      { lat, long: lng, time: meta.time, accuracy: meta.accuracy },
+      meta.sessionId,
+      now,
+    );
+    if (decision.action === 'replaced') {
+      throw new ConflictException({
+        success: false,
+        code: TRACKING_SESSION_REPLACED,
+        message: 'This trip is now tracked from another device',
+      });
+    }
+    if (decision.action === 'reject') {
+      // Not stored, not broadcast — a 200 so the app does not retry or buffer it.
+      await repos.TripModel.updateOne({ _id: trip._id }, { $set: { pendingJump: decision.pending } });
+      return { success: true, data: { accepted: false, reason: decision.reason } };
+    }
     const last = trip.locations[trip.locations.length - 1];
     let segmentMeters: number | null = null;
     if (last) {
       const seg = this.geofenceService.getDistanceMeters(last.lat, last.long, lat, lng);
       segmentMeters = seg;
-      if (seg <= MAX_SEGMENT_METERS) trip.distanceMeters = (trip.distanceMeters || 0) + seg;
+      if (seg <= MAX_SEGMENT_METERS && !decision.reanchored) trip.distanceMeters = (trip.distanceMeters || 0) + seg;
     }
-    trip.locations.push({ lat, long: lng, time: now });
+    trip.locations.push({
+      lat,
+      long: lng,
+      time: meta.time,
+      ...(meta.deviceId ? { deviceId: meta.deviceId } : {}),
+      ...(meta.sessionId ? { sessionId: meta.sessionId } : {}),
+      ...(meta.accuracy !== undefined ? { accuracy: meta.accuracy } : {}),
+    });
+    trip.pendingJump = null;
     trip.lastLocationAt = now;
     const wasLost = !!trip.trackingLostAt;
     if (wasLost) trip.trackingLostAt = null;

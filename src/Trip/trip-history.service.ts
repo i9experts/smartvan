@@ -162,7 +162,7 @@ export class TripHistoryService {
       startedAt: iso(t.startedAt),
       endedAt: iso(t.endedAt),
       durationSeconds: t.durationSeconds,
-      distanceMeters: Math.round(trip.distanceMeters || 0),
+      distanceMeters: Math.round(trip.distanceMetersCleaned ?? trip.distanceMeters ?? 0),
       children,
     };
     if (full) {
@@ -241,7 +241,7 @@ export class TripHistoryService {
         startedAt: iso(t.startedAt),
         endedAt: iso(t.endedAt),
         durationSeconds: t.durationSeconds,
-        distanceMeters: Math.round(trip.distanceMeters || 0),
+        distanceMeters: Math.round(trip.distanceMetersCleaned ?? trip.distanceMeters ?? 0),
         studentCount: ctx.order.length,
         ...countOutcomes(outcomes),
       };

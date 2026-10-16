@@ -97,11 +97,24 @@ export function simplifyTrail(points: TrailPoint[], max = 1000): TrailPoint[] {
   return out.length > max ? downsample(out, max) : out;
 }
 
-/** Raw trip.locations → clean trail points in time order. */
-export function toTrailPoints(locations: any[] = []): TrailPoint[] {
-  return locations
+/**
+ * Raw trip.locations → clean trail points in DEVICE time order (not insert
+ * order: offline backfill and slow requests arrive out of order). A point
+ * without a time keeps the time of the one before it. [locationsCleaned]
+ * (written by the cleanup script) wins over the raw points when present.
+ */
+export function toTrailPoints(locations: any[] = [], cleaned?: any[] | null): TrailPoint[] {
+  const source = cleaned && cleaned.length ? cleaned : locations;
+  let carry = 0;
+  const rows = source
     .filter((l) => Number.isFinite(l?.lat) && Number.isFinite(l?.long))
-    .map((l) => ({ lat: l.lat, lng: l.long, t: l.time ? new Date(l.time).toISOString() : null }));
+    .map((l, i) => {
+      const ms = l.time ? new Date(l.time).getTime() : NaN;
+      if (Number.isFinite(ms)) carry = ms;
+      return { lat: l.lat as number, lng: l.long as number, ms: Number.isFinite(ms) ? ms : carry, hasTime: Number.isFinite(ms), i };
+    });
+  rows.sort((a, b) => a.ms - b.ms || a.i - b.i);
+  return rows.map((r) => ({ lat: r.lat, lng: r.lng, t: r.hasTime ? new Date(r.ms).toISOString() : null }));
 }
 
 // ─── Stops & statuses ───────────────────────────────────────────────
