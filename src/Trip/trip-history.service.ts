@@ -1,12 +1,13 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import * as moment from 'moment-timezone';
 import { Types } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { absenceCovers } from '../Kid/kid-absence.util';
+import { liveTripStatus } from './tracking-health.util';
 import { isValidPoint, resolveStopPoint } from '../route/stop-point.util';
 import {
-  KidOutcome, TRIP_ALERT_TYPES, countOutcomes, dayRange, kidOutcome, ownKidIds, parsePaging, parseScope, tripTiming,
+  KidOutcome, TRIP_ALERT_TYPES, countOutcomes, dateRange, dayRange, kidOutcome, ownKidIds, parsePaging, parseScope, tripTiming,
 } from './trip-history.util';
 
 const TZ = process.env.DEFAULT_TIMEZONE || 'Asia/Karachi';
@@ -82,6 +83,148 @@ export class TripHistoryService {
       success: true,
       data: {
         ...summary,
+        stops,
+        alerts: await this.alerts(trip),
+        school: ctx.school,
+      },
+    };
+  }
+
+
+  // ─── Admin (school-scoped) ──────────────────────────────────────────
+
+  /**
+   * The school the caller may see: admin → their school, school_staff →
+   * their school, superadmin → ?schoolId= (required).
+   */
+  async adminSchoolId(user: any, schoolIdParam?: string): Promise<string> {
+    if (user?.role === 'superadmin') {
+      if (!schoolIdParam || !Types.ObjectId.isValid(schoolIdParam)) {
+        throw new BadRequestException({ success: false, code: 'SCHOOL_ID_REQUIRED', message: 'schoolId is required' });
+      }
+      return schoolIdParam;
+    }
+    if (user?.role === 'admin') {
+      const school: any = await this.repos.SchoolModel.findOne({ admin: new Types.ObjectId(user.userId) }, { _id: 1 }).lean();
+      if (school?._id) return school._id.toString();
+    } else if (user?.role === 'school_staff' && user.schoolId) {
+      return user.schoolId.toString();
+    }
+    throw new ForbiddenException({ success: false, code: 'NOT_SCHOOL_ADMIN', message: 'Only school admins can view this' });
+  }
+
+  /** Ongoing trips of the school with the last location and a live status. */
+  async adminActive(user: any, schoolIdParam?: string, now = new Date()) {
+    const schoolId = await this.adminSchoolId(user, schoolIdParam);
+    const trips: any[] = await this.repos.TripModel.find(
+      { schoolId, status: 'ongoing' },
+      { locations: { $slice: -1 }, vanId: 1, routeId: 1, type: 1, driverId: 1, kids: 1, startedAt: 1, tripStart: 1, createdAt: 1, lastLocationAt: 1, stoppedSince: 1, trafficAlertAt: 1 },
+    ).sort({ createdAt: -1 }).limit(200).lean();
+
+    const ids = (key: string) => [...new Set(trips.map((t) => t[key]).filter((v) => v && Types.ObjectId.isValid(v.toString())).map(String))];
+    const [vans, routes]: any[] = await Promise.all([
+      this.repos.VanModel.find({ _id: { $in: ids('vanId') } }, { carNumber: 1, driverId: 1 }).lean(),
+      this.repos.routeModel.find({ _id: { $in: ids('routeId') } }, { title: 1 }).lean(),
+    ]);
+    const vanById = new Map<string, any>(vans.map((v: any) => [v._id.toString(), v]));
+    const routeById = new Map<string, any>(routes.map((r: any) => [r._id.toString(), r]));
+    const driverIds = [...new Set(trips.map((t) => (t.driverId || vanById.get(t.vanId)?.driverId)?.toString()).filter((v) => v && Types.ObjectId.isValid(v)))];
+    const drivers: any[] = driverIds.length ? await this.repos.driverModel.find({ _id: { $in: driverIds } }, { fullname: 1 }).lean() : [];
+    const driverById = new Map<string, any>(drivers.map((d: any) => [d._id.toString(), d]));
+
+    const items = trips.map((t) => {
+      const loc = t.locations?.[t.locations.length - 1];
+      const lastFixAt = t.lastLocationAt || loc?.time || null;
+      const driverRef = (t.driverId || vanById.get(t.vanId)?.driverId)?.toString();
+      return {
+        tripId: t._id.toString(),
+        driverName: driverById.get(driverRef)?.fullname || null,
+        vanNumber: vanById.get(t.vanId)?.carNumber || null,
+        routeName: routeById.get(t.routeId)?.title || null,
+        tripType: t.type,
+        startedAt: iso(tripTiming(t).startedAt),
+        lastLocation: loc ? { lat: loc.lat, lng: loc.long, heading: null, speed: null, t: iso(loc.time || lastFixAt) } : null,
+        status: liveTripStatus({ lastFixAt, accuracy: loc?.accuracy, stoppedSince: t.stoppedSince, trafficAlertAt: t.trafficAlertAt }, now),
+        studentsOnBoard: (t.kids || []).filter((k: any) => k.status === 'picked').length,
+      };
+    });
+    return { success: true, data: { items, total: items.length } };
+  }
+
+  /** Paginated finished trips of the school; from/to are PKT calendar days (inclusive). */
+  async adminCompleted(
+    user: any,
+    q: { schoolId?: string; from?: string; to?: string; driverId?: string; vanId?: string; routeId?: string; tripType?: string; page?: any; limit?: any },
+  ) {
+    const schoolId = await this.adminSchoolId(user, q.schoolId);
+    const { page, limit, skip } = parsePaging(q.page, q.limit);
+    const filter: any = { schoolId, status: 'end' };
+    const range = dateRange(TZ, q.from, q.to);
+    if (!range) throw new BadRequestException({ success: false, code: 'INVALID_DATE', message: 'from/to must be YYYY-MM-DD' });
+    if (range.$gte || range.$lt) filter['tripEnd.endTime'] = range;
+    if (q.tripType) {
+      if (q.tripType !== 'pick' && q.tripType !== 'drop') throw new BadRequestException({ success: false, code: 'INVALID_TRIP_TYPE', message: 'tripType must be pick or drop' });
+      filter.type = q.tripType;
+    }
+    if (q.vanId) filter.vanId = String(q.vanId);
+    if (q.routeId) filter.routeId = String(q.routeId);
+    if (q.driverId) {
+      const vans: any[] = Types.ObjectId.isValid(q.driverId)
+        ? await this.repos.VanModel.find({ driverId: new Types.ObjectId(q.driverId), schoolId }, { _id: 1 }).lean()
+        : [];
+      // Trips saved before driverId was stored are matched through the driver's van.
+      filter.$or = [{ driverId: String(q.driverId) }, ...(vans.length ? [{ vanId: { $in: vans.map((v) => v._id.toString()) }, driverId: { $exists: false } }] : [])];
+    }
+    const [trips, total]: any[] = await Promise.all([
+      this.repos.TripModel.find(filter, { locations: 0 }).sort({ 'tripEnd.endTime': -1, _id: -1 }).skip(skip).limit(limit).lean(),
+      this.repos.TripModel.countDocuments(filter),
+    ]);
+    const items = await Promise.all(trips.map(async (t) => {
+      const ctx = await this.context(t);
+      const [summary] = await this.summaries([t], ctx);
+      return { ...summary, driverName: ctx.driver?.fullname || null, vanNumber: ctx.van?.carNumber || null };
+    }));
+    return { success: true, data: { items, total, page, limit, hasMore: skip + trips.length < total } };
+  }
+
+  /** Everything about one trip of the school: all students, stops, alerts, distance, duration. */
+  async adminDetails(user: any, tripId: string, schoolIdParam?: string) {
+    const schoolId = await this.adminSchoolId(user, schoolIdParam);
+    const trip = await this.loadTrip(tripId);
+    if (trip.schoolId !== schoolId) throw new ForbiddenException({ success: false, code: 'TRIP_NOT_YOURS', message: 'This trip belongs to another school' });
+    const ctx = await this.context(trip);
+    const [summary] = await this.summaries([trip], ctx);
+    const waits = new Map<string, any>((trip.stopWaits || []).map((w: any) => [w.kidId, w]));
+
+    const students = ctx.order.map((id: string) => {
+      const kid = ctx.kidById.get(id);
+      const o = kidOutcome(id, trip, ctx.absent);
+      return { kidId: id, name: kid?.fullname || 'Student', status: o.status, at: o.at, arrivedAtStopAt: iso(waits.get(id)?.at) };
+    });
+    const stops: any[] = [];
+    const byPlace = new Map<string, any>();
+    for (const id of ctx.order) {
+      const kid = ctx.kidById.get(id);
+      const kl = ctx.locationByKid.get(id);
+      const pt = resolveStopPoint(kl, kid);
+      const key = pt ? `${pt.lat.toFixed(5)},${pt.lng.toFixed(5)}` : `kid:${id}`;
+      let stop = byPlace.get(key);
+      if (!stop) {
+        stop = { order: stops.length + 1, placeName: kl?.address || kid?.homeAddress || `Stop ${stops.length + 1}`, lat: pt?.lat ?? null, lng: pt?.lng ?? null, students: [] };
+        byPlace.set(key, stop);
+        stops.push(stop);
+      }
+      const o = kidOutcome(id, trip, ctx.absent);
+      stop.students.push({ kidId: id, name: kid?.fullname || 'Student', status: o.status, at: o.at });
+    }
+    return {
+      success: true,
+      data: {
+        ...summary,
+        driverName: ctx.driver?.fullname || null,
+        vanNumber: ctx.van?.carNumber || null,
+        maxSpeedKmh: trip.maxSpeedKmh || 0,
+        students,
         stops,
         alerts: await this.alerts(trip),
         school: ctx.school,

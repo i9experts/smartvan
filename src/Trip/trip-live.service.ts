@@ -390,7 +390,7 @@ export class TripLiveService {
    * stop and the school, the school admin and the parents of kids still
    * waiting / in the van are alerted (max once per 10 min per trip).
    */
-  async checkTraffic(trip: any, lat: number, lng: number, speedKmh: number | null, segmentMeters: number | null) {
+  async checkTraffic(trip: any, lat: number, lng: number, speedKmh: number | null, segmentMeters: number | null): Promise<'moving' | 'stopped' | 'delayed'> {
     const now = new Date();
     const moving = isMoving(speedKmh, segmentMeters);
     const repos = this.databaseService.repositories;
@@ -430,14 +430,15 @@ export class TripLiveService {
     await repos.TripModel.updateOne({ _id: trip._id }, { $set: update });
 
     // Live status for parents' maps.
+    const liveStatus = moving ? 'moving' : next.stoppedSeconds >= 60 && !nearStop ? 'delayed' : 'stopped';
     this.eventsGateway.emitToRoom(trip._id.toString(), 'tripStatus', {
       tripId: trip._id.toString(),
-      status: moving ? 'moving' : next.stoppedSeconds >= 60 && !nearStop ? 'delayed' : 'stopped',
+      status: liveStatus,
       stoppedSeconds: next.stoppedSeconds,
       at: now.toISOString(),
     });
 
-    if (!next.alert) return;
+    if (!next.alert) return liveStatus;
     try {
       const van: any = await repos.VanModel.findById(trip.vanId, { carNumber: 1, driverId: 1, schoolId: 1 }).lean();
       const driver: any = van?.driverId ? await repos.driverModel.findById(van.driverId, { fullname: 1 }).lean() : null;
@@ -485,5 +486,6 @@ export class TripLiveService {
     } catch (e) {
       console.error('[traffic] alert failed:', e);
     }
+    return liveStatus;
   }
 }

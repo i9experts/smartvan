@@ -2562,11 +2562,14 @@ async generateGraphData(
     }
 
     // ── Traffic delay (stopped ≥ 2 min away from stops) ────────────────
+    let liveStatus: string = kmh === null || kmh >= 5 ? 'moving' : 'stopped';
     try {
-      await this.tripLive.checkTraffic(trip, lat, lng, kmh, segmentMeters);
+      liveStatus = (await this.tripLive.checkTraffic(trip, lat, lng, kmh, segmentMeters)) || liveStatus;
     } catch (e) {
       console.error('[traffic] check failed:', e);
     }
+    // Admin dashboards (school room), throttled to one per 3 s per trip; only accepted points get here.
+    this.eventsGateway.emitAdminTripLocation(trip.schoolId, { tripId, lat, lng, heading: null, speed: kmh, status: liveStatus });
 
     // ── Overspeed alert to school (max once per 5 min per trip) ──────────
     if (overspeed) {

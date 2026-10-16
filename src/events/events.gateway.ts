@@ -19,6 +19,7 @@ import { Server } from 'socket.io';
 import { CustomSocket } from './custom-socket.interface';
 import { Types } from 'mongoose';
 import { evaluatePoint, GeoSample, PendingJump, readTrackingMeta, sessionAllows, TRACKING_SESSION_REPLACED } from 'src/Trip/location-guard.util';
+import { isMoving } from 'src/Trip/traffic-delay.util';
 import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 
@@ -154,6 +155,29 @@ afterInit(server: Server) {
   /** tripId → last relayed fix and a fix waiting for confirmation, for the live-relay quality filter. */
   private readonly relayState = new Map<string, { prev: GeoSample | null; pending: PendingJump | null }>();
 
+  /** tripId → last time `adminTripLocation` went out (≤ 1 per ADMIN_LOCATION_MIN_MS per trip). */
+  private readonly adminEmitAt = new Map<string, number>();
+  static readonly ADMIN_LOCATION_MIN_MS = 3000;
+
+  /**
+   * Throttled position for admin dashboards: one `adminTripLocation` per
+   * trip per 3 s to the school room, so admins need not join every trip
+   * room. Call only with accepted (filtered) points. Returns true if sent.
+   */
+  emitAdminTripLocation(
+    schoolId: string | undefined,
+    p: { tripId: string; lat: number; lng: number; heading: number | null; speed: number | null; status: string },
+    nowMs: number = Date.now(),
+  ): boolean {
+    if (!schoolId) return false;
+    const last = this.adminEmitAt.get(p.tripId);
+    if (last !== undefined && nowMs - last < EventsGateway.ADMIN_LOCATION_MIN_MS) return false;
+    this.adminEmitAt.set(p.tripId, nowMs);
+    EventsGateway.trimMap(this.adminEmitAt);
+    this.emitToSchool(schoolId, 'adminTripLocation', { ...p, t: new Date(nowMs).toISOString() });
+    return true;
+  }
+
   setTrackingSession(tripId: string, sessionId: string) {
     this.sessionByTrip.set(tripId, sessionId);
     this.relayState.delete(tripId);
@@ -208,7 +232,7 @@ afterInit(server: Server) {
     if (!verified.has(room)) {
       const driverId = socket.decoded_token?.userId || socket.decoded_token?.sub;
       const [trip, van]: any[] = await Promise.all([
-        this.databaseService.repositories.TripModel.findById(room, { vanId: 1, status: 1, trackingSession: 1 }).lean(),
+        this.databaseService.repositories.TripModel.findById(room, { vanId: 1, status: 1, trackingSession: 1, schoolId: 1 }).lean(),
         this.databaseService.repositories.VanModel.findOne({ driverId: new Types.ObjectId(driverId) }, { _id: 1 }).lean(),
       ]);
       if (!trip || !van || trip.vanId !== van._id.toString() || trip.status !== 'ongoing') {
@@ -216,6 +240,7 @@ afterInit(server: Server) {
         return;
       }
       verified.add(room);
+      (socket.data.schoolByTrip || (socket.data.schoolByTrip = {}))[room] = (trip as any).schoolId;
       const claimed = (trip as any).trackingSession?.sessionId;
       if (claimed && !this.sessionByTrip.has(room)) this.sessionByTrip.set(room, claimed);
     }
@@ -253,6 +278,9 @@ afterInit(server: Server) {
       heading,
       moving: speedKmh === null ? null : speedKmh >= 5,
       at: new Date().toISOString(),
+    });
+    this.emitAdminTripLocation(socket.data.schoolByTrip?.[room], {
+      tripId: room, lat, lng, heading, speed: speedKmh, status: isMoving(speedKmh, null) ? 'moving' : 'stopped',
     });
   }
 

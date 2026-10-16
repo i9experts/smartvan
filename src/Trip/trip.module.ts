@@ -8,11 +8,11 @@ import { FirebaseAdminModule } from 'src/notification/firebase.module';
 import { TripLiveService } from './trip-live.service';
 import { EventsModule } from 'src/events/events.module';
 import { TripHistoryService } from './trip-history.service';
-import { DriverTripHistoryController, ParentTripHistoryController } from './trip-history.controller';
+import { DriverTripHistoryController, ParentTripHistoryController, AdminTripHistoryController } from './trip-history.controller';
 
 @Module({
   imports: [FirebaseAdminModule, EventsModule],
-  controllers: [TripController, DriverTripHistoryController, ParentTripHistoryController],
+  controllers: [TripController, DriverTripHistoryController, ParentTripHistoryController, AdminTripHistoryController],
   providers: [TripService, EtaService, GeofenceService, TripLiveService, TripHistoryService],
   exports: [TripService, EtaService, GeofenceService],
 })

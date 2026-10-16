@@ -49,3 +49,32 @@ export function cleanBackfill(
   out.sort((a, b) => a.time.getTime() - b.time.getTime());
   return out.slice(0, max);
 }
+
+export type LiveTripStatus = 'moving' | 'stopped' | 'delayed' | 'weak_signal' | 'offline';
+
+/** A fix older than this (but not yet "offline") means the phone has a weak connection. */
+export const WEAK_SIGNAL_SECONDS = 45;
+/** GPS accuracy (metres) worse than this counts as weak signal. */
+export const WEAK_ACCURACY_METERS = 30;
+
+/**
+ * Live status of an ongoing trip for the admin map, from what is stored on
+ * the trip: offline (no fix for TRACKING_LOST_MINUTES) > weak signal (old or
+ * inaccurate fix) > delayed (traffic alert raised in the last 10 min while
+ * still stopped) > stopped > moving.
+ */
+export function liveTripStatus(
+  t: { lastFixAt?: Date | string | null; accuracy?: number | null; stoppedSince?: Date | string | null; trafficAlertAt?: Date | string | null },
+  now: Date = new Date(),
+): LiveTripStatus {
+  const lastMs = t.lastFixAt ? new Date(t.lastFixAt).getTime() : NaN;
+  if (!Number.isFinite(lastMs)) return 'offline';
+  const ageSec = (now.getTime() - lastMs) / 1000;
+  if (ageSec >= trackingLostMinutes() * 60) return 'offline';
+  if (ageSec >= WEAK_SIGNAL_SECONDS || (t.accuracy != null && t.accuracy > WEAK_ACCURACY_METERS)) return 'weak_signal';
+  if (t.stoppedSince) {
+    const alertMs = t.trafficAlertAt ? new Date(t.trafficAlertAt).getTime() : NaN;
+    return Number.isFinite(alertMs) && now.getTime() - alertMs <= 10 * 60_000 ? 'delayed' : 'stopped';
+  }
+  return 'moving';
+}

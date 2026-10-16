@@ -154,3 +154,23 @@ export function ownKidIds(kids: { _id: any; parentId?: any }[], parentId: string
 }
 
 export const TRIP_ALERT_TYPES = ['DRIVER_SOS', 'OVERSPEED', 'TRAFFIC_DELAY', 'TRACKING_LOST'];
+
+// ─── Admin history filters ──────────────────────────────────────────
+
+/**
+ * Inclusive calendar-day range in [tz] from "YYYY-MM-DD" strings:
+ * from = 00:00 of [from], to (exclusive) = 00:00 of the day after [to].
+ * Returns null for an invalid date; an absent bound is left open.
+ */
+export function dateRange(
+  tz: string, from?: string, to?: string,
+): { $gte?: Date; $lt?: Date } | null {
+  const out: { $gte?: Date; $lt?: Date } = {};
+  const parse = (s: string) => {
+    const m = /^\d{4}-\d{2}-\d{2}$/.test(s) ? moment.tz(s, 'YYYY-MM-DD', true, tz) : null;
+    return m && m.isValid() ? m : null;
+  };
+  if (from) { const m = parse(from); if (!m) return null; out.$gte = m.startOf('day').toDate(); }
+  if (to) { const m = parse(to); if (!m) return null; out.$lt = m.startOf('day').add(1, 'day').toDate(); }
+  return out;
+}

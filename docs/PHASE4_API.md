@@ -281,3 +281,70 @@ order. If a trip has `locationsCleaned` (see below) it is used instead of
 writes `locationsCleaned`, `distanceMetersCleaned`, `cleanedAt` — the original
 `locations` / `distanceMeters` are never changed. Both read `MONGODB_URI` from
 the environment and never print it; run `npm run build` first.
+
+## 11. Admin live trails & trip history (Oct 16)
+
+Auth: JWT of an **admin** (own school), **school_staff** (own school) or
+**superadmin** (must pass `?schoolId=`). A `schoolId` sent by an admin/staff
+is ignored. Other roles → 403 `NOT_SCHOOL_ADMIN`; a trip of another school →
+403.
+
+### What the admin Live Tracking page receives
+
+- Socket `joinSchoolAlerts` → room `school:<id>`: alerts (`sosAlert`-style,
+  `trafficDelayAlert`, `overspeedAlert`, `trackingLostAlert`,
+  `trackingRestored`) and now **`adminTripLocation`** (below).
+- Per-trip room (`joinTrip { tripId }`): `locationUpdated`, `tripStatus`,
+  `etaUpdate`, `trailBackfilled`. Raw location updates are **not** sent to
+  the school room, only these trip rooms — hence `adminTripLocation`.
+
+### `GET /admin/trips/active`
+
+Ongoing trips of the school:
+
+```json
+{ "success": true, "data": { "total": 1, "items": [{
+  "tripId": "…", "driverName": "…", "vanNumber": "KHI-123", "routeName": "…",
+  "tripType": "pick", "startedAt": "ISO",
+  "lastLocation": { "lat": 24.9, "lng": 67.0, "heading": null, "speed": null, "t": "ISO" },
+  "status": "moving | stopped | delayed | weak_signal | offline",
+  "studentsOnBoard": 12 }] } }
+```
+
+`heading`/`speed` are not stored on the trip, so they are `null` here — use
+`adminTripLocation` for live values. `lastLocation` is `null` before the first
+fix. Status: `offline` = no fix for `TRACKING_LOST_MINUTES` (4); `weak_signal`
+= last fix ≥ 45 s old or accuracy > 30 m; `delayed` = stopped with a traffic
+alert in the last 10 min; `stopped` = standing still; else `moving`.
+
+### `GET /trips/:id/trail`, `GET /trips/:id/route-plan`
+
+Already open to admin / school_staff of the trip's school (and superadmin);
+the trail uses the filtered, time-sorted points (`locationsCleaned` if present).
+
+### Socket `adminTripLocation` → room `school:<id>`
+
+`{ tripId, lat, lng, heading, speed, t, status }` — `speed` in km/h (null if
+unknown), `heading` degrees (null for HTTP-sourced fixes), `t` ISO,
+`status` = `moving | stopped | delayed`. At most **one per 3 s per trip**; only
+points that passed the quality filters (accuracy / speed / session) are sent.
+
+### `GET /admin/trips/completed`
+
+Query: `from`, `to` (`YYYY-MM-DD`, **Asia/Karachi** calendar days, both
+inclusive, filter on trip end time), `driverId`, `vanId`, `routeId`,
+`tripType` (`pick|drop`), `page` (1), `limit` (20, max 50). Newest first.
+400 `INVALID_DATE` / `INVALID_TRIP_TYPE`.
+
+Items are the driver-history summary (`id, routeName, tripType, date,
+startedAt, endedAt, durationSeconds, distanceMeters, studentCount,
+pickedCount, droppedCount, absentCount, noShowCount`) plus `driverName`,
+`vanNumber`. Response `data: { items, total, page, limit, hasMore }`.
+
+### `GET /admin/trips/:id/details`
+
+The summary above plus `maxSpeedKmh`, `students[] { kidId, name, status
+(picked|dropped|absent|no_show|pending), at, arrivedAtStopAt }`, `stops[]
+{ order, placeName, lat, lng, students[] { kidId, name, status, at } }`,
+`alerts[] { type: sos|overspeed|traffic_delay|tracking_lost, title, message, at }`
+raised for the van during the trip, and `school { name, lat, lng }`.
