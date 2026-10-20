@@ -1153,6 +1153,59 @@ private async notifyExistingParentOfNewStudent(parent: any, kid: any, school: an
 // }
 
 
+// Superadmin view of every parent on the platform, including those who
+// self-registered from the parent app (they carry a free-text schoolName and
+// may not be linked to any School document yet).
+async getAllParentsBySuperAdmin(page = 1, limit = 20, search?: string, linked?: string) {
+  const { parentModel, SchoolModel } = this.databaseService.repositories;
+  const skip = (page - 1) * limit;
+
+  const filter: any = { isDelete: { $ne: true } };
+  if (search && search.trim()) {
+    const rx = { $regex: search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    filter.$or = [{ fullname: rx }, { email: rx }, { phoneNo: rx }, { schoolName: rx }];
+  }
+  if (linked === 'true') filter.schoolId = { $nin: [null, ''] };
+  if (linked === 'false') filter.$and = [{ $or: [{ schoolId: null }, { schoolId: '' }, { schoolId: { $exists: false } }] }];
+
+  const [parents, total] = await Promise.all([
+    parentModel
+      .find(filter, { fullname: 1, email: 1, phoneNo: 1, alternatePhoneNo: 1, address: 1, schoolName: 1, schoolId: 1, isVerified: 1, lastLoginAt: 1, createdAt: 1 })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    parentModel.countDocuments(filter),
+  ]);
+
+  const schoolIds = [...new Set((parents as any[]).map((p) => p.schoolId).filter((id) => id && Types.ObjectId.isValid(id)))];
+  const schools = schoolIds.length
+    ? await SchoolModel.find({ _id: { $in: schoolIds } }, { name: 1, schoolName: 1 }).lean()
+    : [];
+  const schoolMap = new Map((schools as any[]).map((s) => [s._id.toString(), s.name || s.schoolName || '']));
+
+  return {
+    message: 'Parents fetched successfully',
+    data: (parents as any[]).map((p) => ({
+      _id: p._id.toString(),
+      fullname: p.fullname || '',
+      email: p.email || '',
+      phoneNo: p.phoneNo || '',
+      alternatePhoneNo: p.alternatePhoneNo || '',
+      address: p.address || '',
+      schoolName: p.schoolName || '',
+      linkedSchoolId: p.schoolId || '',
+      linkedSchoolName: schoolMap.get(p.schoolId) || '',
+      isVerified: !!p.isVerified,
+      lastLoginAt: p.lastLoginAt || null,
+      createdAt: p.createdAt,
+    })),
+    total,
+    page,
+    limit,
+  };
+}
+
 async getAllParentsBySchool(adminId: string, page = 1, limit = 12, search?: string) {
   const adminObjectId = new Types.ObjectId(adminId);
 
@@ -1195,6 +1248,7 @@ async getAllParentsBySchool(adminId: string, page = 1, limit = 12, search?: stri
       $project: {
         _id: { $toString: '$_id' },
         fullname: { $ifNull: ['$fullname', ''] },
+        schoolName: { $ifNull: ['$schoolName', ''] },
         email: { $ifNull: ['$email', ''] },
         phoneNo: { $ifNull: ['$phoneNo', ''] },
         alternatePhoneNo: { $ifNull: ['$alternatePhoneNo', ''] },

@@ -128,6 +128,21 @@ async getSuperAdminOverview(@Req() req: any) {
 }
 
 @UseGuards(AuthGuard('jwt'))
+@Get('getAllParentsBySuperAdmin')
+async getAllParentsBySuperAdmin(
+  @Req() req: any,
+  @Query('page') page: string,
+  @Query('limit') limit: string,
+  @Query('search') search: string,
+  @Query('linked') linked: string,
+) {
+  if (!req.user || req.user.role !== 'superadmin') {
+    throw new ForbiddenException('Only superadmins can access this API');
+  }
+  return this.adminService.getAllParentsBySuperAdmin(Number(page) || 1, Number(limit) || 20, search, linked);
+}
+
+@UseGuards(AuthGuard('jwt'))
 @Get('getAllSchoolsBySuperAdmin')
 async getAllSchoolsBySuperAdmin(
   @Req() req: any,

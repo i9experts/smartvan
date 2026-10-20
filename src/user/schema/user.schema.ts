@@ -12,6 +12,9 @@ export class User {
  @Prop()
   fullname: string;
 
+  @Prop({ required: false, trim: true })
+  schoolName?: string;
+
   @Prop({ required: false, unique: true, sparse: true })
   email: string;
 

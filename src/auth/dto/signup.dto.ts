@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 
-import { IsEmail, IsOptional, IsString, IsBoolean, IsEnum, IsNumber } from 'class-validator';
+import { IsEmail, IsOptional, IsString, IsBoolean, IsEnum, IsNumber, MaxLength } from 'class-validator';
 
 export class RegisterDto {
   @IsOptional()
@@ -10,6 +10,13 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   fullname?: string;
+
+  // Name of the school the parent's children attend, typed in by the parent
+  // at self-registration (free text, not a link to a School document).
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  schoolName?: string;
 
   @IsOptional()
   @IsEmail()
