@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Query, Req, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Query, Req, ForbiddenException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { ParentIntelligenceService } from './parent-intelligence.service';
@@ -55,5 +55,15 @@ export class ParentIntelligenceController {
       ageMax: ageMax ? parseInt(ageMax, 10) : undefined,
       status,
     });
+  }
+
+  // Re-runnable: fills in academicLevel/city/district/town/country for kids
+  // added before this feature shipped. Geocoding is capped per call — call
+  // again (the response's geoRemaining says whether there's more to do).
+  @UseGuards(AuthGuard('jwt'))
+  @Post('backfill')
+  async backfill(@Req() req: any) {
+    this.requireSuperAdmin(req);
+    return this.parentIntelligenceService.backfillIntelligenceFields();
   }
 }
