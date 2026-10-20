@@ -14,6 +14,12 @@ export class CreateKidDto {
   @IsString()
   schoolId?: string;
 
+  // Free-text school name, set instead of schoolId when the parent's school
+  // hasn't onboarded on SmartVan yet — see kid.service.addKid.
+  @IsOptional()
+  @IsString()
+  prospectSchoolName?: string;
+
   @IsOptional()
   @IsString()
   fullname?: string;

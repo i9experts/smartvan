@@ -26,6 +26,7 @@ import { InvoiceModule } from './invoice/invoice.module';
 import { PromotionBannerModule } from './promotion-banner/promotion-banner.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { BillingModule } from './billing/billing.module';
+import { ParentIntelligenceModule } from './parent-intelligence/parent-intelligence.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ComplianceModule } from './compliance/compliance.module';
 import { EmployeeModule } from './employee/employee.module';
@@ -64,6 +65,7 @@ import { ContactController } from './admin/contact.controller';
     PromotionBannerModule,
     WhatsappModule,
     BillingModule,
+    ParentIntelligenceModule,
     ScheduleModule.forRoot(),
     ComplianceModule,
     EmployeeModule,
