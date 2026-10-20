@@ -9,15 +9,7 @@ import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { Kid } from './kid.schema';
 import { title } from 'process';
 import { reverseGeocodeAreas } from 'src/common/reverse-geocode';
-
-// Mirrors the parent app's kGradeLevels (add_kid_screen.dart) — used only to
-// bucket a kid into primary/secondary for Parent Intelligence filtering.
-const PRIMARY_GRADES = new Set(['Pre Nursery', 'Nursery', 'KG', 'G1', 'G2', 'G3', 'G4', 'G5']);
-
-function academicLevelForGrade(grade?: string): 'primary' | 'secondary' | undefined {
-  if (!grade) return undefined;
-  return PRIMARY_GRADES.has(grade) ? 'primary' : 'secondary';
-}
+import { academicLevelForGrade } from 'src/common/academic-level';
 
 
 

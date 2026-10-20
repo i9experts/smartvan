@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
+import { academicLevelForGrade } from 'src/common/academic-level';
+import { reverseGeocodeAreas } from 'src/common/reverse-geocode';
 
 // Age buckets chosen to roughly track school stages (toddler/pre-primary,
 // primary, middle, secondary, post-16) rather than even 5-year spans — more
@@ -219,6 +221,21 @@ export class ParentIntelligenceService {
       if (params.ageMax != null) match.age.$lte = params.ageMax;
     }
 
+    // A parent who registered (schoolName typed at signup) but never got as
+    // far as adding a kid has no Kid document at all, so they were
+    // previously invisible here no matter how they registered — only
+    // showing up in the overview's topUnmetDemandSchools, never in the
+    // actual register. Union them in, unless a kid-only filter (grade, age,
+    // location, a specific school...) is active, since a kidless parent has
+    // none of those fields to match against, or the filter is "attached"
+    // (a kidless parent is definitionally not attached to anything).
+    const kidOnlyFilterActive = !!(
+      params.city || params.country || params.district || params.town ||
+      params.level || params.grade || params.schoolId ||
+      params.ageMin != null || params.ageMax != null
+    );
+    const includeKidlessParents = params.status !== 'attached' && !kidOnlyFilterActive;
+
     const pipeline: any[] = [
       { $match: match },
       {
@@ -279,6 +296,41 @@ export class ParentIntelligenceService {
       },
     });
 
+    if (includeKidlessParents) {
+      const parentMatch: any = [
+        { $match: { userType: 'parent', isDelete: { $ne: true } } },
+        { $lookup: { from: 'kids', localField: '_id', foreignField: 'parentId', as: 'kids' } },
+        { $match: { kids: { $size: 0 } } },
+      ];
+      if (params.search?.trim()) {
+        const re = new RegExp(params.search.trim(), 'i');
+        parentMatch.push({
+          $match: { $or: [{ fullname: re }, { email: re }, { phoneNo: re }, { schoolName: re }] },
+        });
+      }
+      parentMatch.push({
+        $project: {
+          kidName: { $literal: null },
+          grade: { $literal: null },
+          age: { $literal: null },
+          gender: { $literal: null },
+          academicLevel: { $literal: null },
+          city: { $literal: null },
+          district: { $literal: null },
+          town: { $literal: null },
+          country: { $literal: null },
+          isProspect: { $literal: true },
+          prospectSchoolName: '$schoolName',
+          createdAt: 1,
+          schoolName: { $ifNull: ['$schoolName', null] },
+          parentName: '$fullname',
+          parentEmail: '$email',
+          parentPhone: '$phoneNo',
+        },
+      });
+      pipeline.push({ $unionWith: { coll: 'parents', pipeline: parentMatch } });
+    }
+
     pipeline.push({
       $facet: {
         rows: [{ $sort: { createdAt: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit }],
@@ -295,6 +347,68 @@ export class ParentIntelligenceService {
       limit,
       total,
       totalPages: Math.max(Math.ceil(total / limit), 1),
+    };
+  }
+
+  // One-time (re-runnable) data fix: every kid added before this feature
+  // shipped has no academicLevel/city/district/town/country at all, which
+  // is why the overview's charts render empty despite real attached kids
+  // existing. academicLevel is pure computation from grade — cheap, do every
+  // such kid in one bulk write. Geocoding needs a real external call per
+  // kid, so it's capped and batched per call; call again to pick up the
+  // rest (geoRemaining tells the caller whether to).
+  async backfillIntelligenceFields() {
+    const { KidModel } = this.databaseService.repositories;
+
+    const needsLevel = await KidModel.find(
+      { grade: { $nin: [null, ''] }, academicLevel: { $exists: false } },
+      { grade: 1 },
+    );
+    if (needsLevel.length) {
+      await KidModel.bulkWrite(
+        needsLevel.map((k: any) => ({
+          updateOne: {
+            filter: { _id: k._id },
+            update: { $set: { academicLevel: academicLevelForGrade(k.grade) } },
+          },
+        })),
+      );
+    }
+
+    const GEO_BATCH = 60;
+    const GEO_CONCURRENCY = 10;
+    const needsGeo = await KidModel.find(
+      { homeLat: { $ne: null }, homeLng: { $ne: null }, city: { $exists: false } },
+      { homeLat: 1, homeLng: 1 },
+    ).limit(GEO_BATCH);
+
+    let geoUpdated = 0;
+    for (let i = 0; i < needsGeo.length; i += GEO_CONCURRENCY) {
+      const slice = needsGeo.slice(i, i + GEO_CONCURRENCY);
+      const results = await Promise.all(
+        slice.map(async (kid: any) => {
+          const geo = await reverseGeocodeAreas(kid.homeLat, kid.homeLng);
+          if (!geo) return false;
+          await KidModel.updateOne(
+            { _id: kid._id },
+            { $set: { city: geo.city, district: geo.district, town: geo.town, country: geo.country } },
+          );
+          return true;
+        }),
+      );
+      geoUpdated += results.filter(Boolean).length;
+    }
+
+    const geoRemaining = await KidModel.countDocuments({
+      homeLat: { $ne: null },
+      homeLng: { $ne: null },
+      city: { $exists: false },
+    });
+
+    return {
+      academicLevelUpdated: needsLevel.length,
+      geoUpdated,
+      geoRemaining,
     };
   }
 }
