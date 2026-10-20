@@ -8,8 +8,16 @@ import { FirebaseAdminService } from 'src/notification/firebase-admin.service';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { Kid } from './kid.schema';
 import { title } from 'process';
+import { reverseGeocodeAreas } from 'src/common/reverse-geocode';
 
+// Mirrors the parent app's kGradeLevels (add_kid_screen.dart) — used only to
+// bucket a kid into primary/secondary for Parent Intelligence filtering.
+const PRIMARY_GRADES = new Set(['Pre Nursery', 'Nursery', 'KG', 'G1', 'G2', 'G3', 'G4', 'G5']);
 
+function academicLevelForGrade(grade?: string): 'primary' | 'secondary' | undefined {
+  if (!grade) return undefined;
+  return PRIMARY_GRADES.has(grade) ? 'primary' : 'secondary';
+}
 
 
 
@@ -36,6 +44,13 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
 
   if (!Parent) {
     throw new UnauthorizedException('Parent not found');
+  }
+
+  // Step 2b: Every kid needs a school on file — either a real onboarded one,
+  // or (when the parent's school hasn't joined SmartVan yet) a free-text
+  // name so Parent Intelligence can surface it as demand/a sales lead.
+  if (!CreateKidDto.schoolId && !CreateKidDto.prospectSchoolName?.trim()) {
+    throw new BadRequestException('Please select your school, or tell us its name if it is not listed yet');
   }
 
   let driver = null;
@@ -80,9 +95,18 @@ async addKid(CreateKidDto: CreateKidDto, userId: string, userType: string) {
   }
 
   // Step 6: Create kid
+  const isProspect = !CreateKidDto.schoolId;
+  const geo = (CreateKidDto.homeLat != null && CreateKidDto.homeLng != null)
+    ? await reverseGeocodeAreas(CreateKidDto.homeLat, CreateKidDto.homeLng)
+    : null;
+
   const newKid = new this.databaseService.repositories.KidModel({
     ...CreateKidDto,
     parentId: Parent._id,
+    isProspect,
+    prospectSchoolName: isProspect ? CreateKidDto.prospectSchoolName?.trim() : undefined,
+    academicLevel: academicLevelForGrade(CreateKidDto.grade),
+    ...(geo ? { city: geo.city, district: geo.district, town: geo.town, country: geo.country } : {}),
   });
 
   let savedKid;

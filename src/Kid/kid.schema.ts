@@ -57,6 +57,41 @@ homeLng: number;
 // regular kid APIs — only the school's card-printing endpoints expose it.
 @Prop({ required: false, unique: true, sparse: true, select: false })
 qrToken?: string;
+
+// ─── Parent Intelligence (super admin) ───────────────────────────────
+// A parent can only pick a school that's already onboarded on SmartVan
+// (addKid's school dropdown is strictly populated from getAllSchools) —
+// so a family whose school hasn't joined yet had no way to be recorded
+// anywhere at all, and sales had no visibility into that demand. When no
+// real schoolId is given, addKid stores the parent's own free-text school
+// name here instead, flagged as a prospect lead rather than an enrolled
+// student.
+@Prop({ required: false, default: false })
+isProspect: boolean;
+
+@Prop({ required: false })
+prospectSchoolName?: string;
+
+// Reverse-geocoded from homeLat/homeLng at addKid time — see
+// reverseGeocodeAreas() — so the intelligence register can filter/group by
+// area without re-geocoding on every read.
+@Prop({ required: false })
+city?: string;
+
+@Prop({ required: false })
+district?: string;
+
+@Prop({ required: false })
+town?: string;
+
+@Prop({ required: false })
+country?: string;
+
+// Derived from grade at save time (Pre Nursery..G5 = primary, G6..G12 =
+// secondary) — stored rather than computed on read so it's indexable and
+// filterable directly in the register/overview aggregations.
+@Prop({ required: false, enum: ['primary', 'secondary'] })
+academicLevel?: string;
 }
 
 
