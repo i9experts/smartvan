@@ -6,6 +6,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { Types } from 'mongoose';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
 import { sendWithTimeout } from 'src/common/send-with-timeout.util';
+import { SchoolService } from 'src/school/school.service';
 
 const PRICE_IDS = {
   car_pkr: 'price_1ShP57GTlXYof3w6LpNPt7t7',
@@ -30,6 +31,7 @@ export class BillingService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly auditLogService: AuditLogService,
+    private readonly schoolService: SchoolService,
   ) {
     this.stripe = new (Stripe as any)(process.env.STRIPE_SECRET_KEY as string, {
       apiVersion: '2023-10-16' as any,
@@ -398,6 +400,10 @@ export class BillingService {
       { schoolId: school._id.toString(), schoolName: schoolAny.schoolName, ...update, note },
     );
 
+    this.schoolService
+      .markLeadWonIfLinked(school._id, 'Payment confirmed manually by superadmin — marked Won')
+      .catch((err) => console.error('[billing] markLeadWonIfLinked failed:', err?.message || err));
+
     return {
       message: 'Billing status updated manually',
       data: {
@@ -608,6 +614,9 @@ export class BillingService {
             { $set: { subscriptionStatus: 'active', currentPlan: 'Paid' } },
           );
         }
+        this.schoolService
+          .markLeadWonIfLinked(schoolId, 'First payment received (Stripe checkout) — marked Won')
+          .catch((err) => console.error('[billing] markLeadWonIfLinked failed:', err?.message || err));
         break;
       }
       case 'invoice.payment_failed': {
@@ -646,6 +655,17 @@ export class BillingService {
             { stripeCustomerId: customerId },
             { $set: { subscriptionStatus: 'active', currentPlan: 'Paid' } },
           );
+        }
+        {
+          const paidSchool = await this.databaseService.repositories.SchoolModel.findOne(
+            { stripeCustomerId: customerId },
+            { _id: 1 },
+          );
+          if (paidSchool) {
+            this.schoolService
+              .markLeadWonIfLinked(paidSchool._id, 'Invoice paid (Stripe) — marked Won')
+              .catch((err) => console.error('[billing] markLeadWonIfLinked failed:', err?.message || err));
+          }
         }
         break;
       }
@@ -842,6 +862,12 @@ export class BillingService {
 
     if (Object.keys(update).length > 0) {
       await this.databaseService.repositories.SchoolModel.updateOne({ _id: school._id }, { $set: update });
+    }
+
+    if (subscriptionStatus === 'active' || premiumSubscriptionStatus === 'active') {
+      this.schoolService
+        .markLeadWonIfLinked(school._id, 'Active subscription found on Stripe sync — marked Won')
+        .catch((err) => console.error('[billing] markLeadWonIfLinked failed:', err?.message || err));
     }
 
     return {

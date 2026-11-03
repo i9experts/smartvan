@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, OnModuleInit, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -9,12 +9,13 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { OtpService } from 'src/user/schema/otp/otp.service';
 import { SchoolDocument } from './school.schema';
 import { SchoolLead, SchoolLeadDocument } from './school-lead.schema';
+import { LEAD_EMAIL_TEMPLATES } from './lead-email-templates';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
 import { FEATURE_KEYS, FEATURE_KEY_SET, effectiveFeatures, hasFeature } from './feature-keys';
 
 @Injectable()
-export class SchoolService {
+export class SchoolService implements OnModuleInit {
   constructor(
     private databaseService: DatabaseService,
     private readonly otpService: OtpService,
@@ -23,6 +24,12 @@ export class SchoolService {
     private readonly whatsappService: WhatsappService,
     private readonly auditLogService: AuditLogService,
   ) {}
+
+  async onModuleInit() {
+    this.migrateLegacyLeadStatuses().catch((err) =>
+      console.error('[SchoolService] legacy lead status migration failed:', err?.message || err),
+    );
+  }
 
   // ── Email helper ──────────────────────────────────────────────
   private getMailer() {
@@ -112,16 +119,22 @@ export class SchoolService {
     return { message: 'Leads fetched', data: leads };
   }
 
-  async updateLeadStatus(id: string, status: string) {
-    const valid = ['new', 'contacted', 'activated', 'rejected'];
+  async updateLeadStatus(id: string, status: string, actor?: { userId: string; email: string }) {
+    const valid = ['new', 'contacted', 'demo', 'trial', 'won', 'lost'];
     if (!valid.includes(status)) throw new BadRequestException('Invalid status');
 
     const lead = await this.leadModel.findById(id);
     if (!lead) throw new BadRequestException('Lead not found');
 
-    // If activating — auto-provision admin account + school
-    if (status === 'activated' && lead.status !== 'activated') {
-      await this.provisionSchoolAndAdmin({
+    const previousStatus = lead.status;
+    let provisioned = false;
+
+    // Moving into 'trial' is the moment the school actually gets an
+    // account — provision it the same way createInstitutionDirectly does.
+    // Skipped if this lead is already linked (re-entering 'trial' is then
+    // just a status change, not a second account).
+    if (status === 'trial' && !lead.schoolId) {
+      const result = await this.provisionSchoolAndAdmin({
         schoolName: lead.schoolName,
         adminName: lead.adminName,
         email: lead.email,
@@ -129,18 +142,203 @@ export class SchoolService {
         address: lead.city + ', ' + lead.country,
         currentPlan: lead.plan || 'Professional',
       });
+      if (result) {
+        lead.schoolId = result.school._id as any;
+        provisioned = true;
+      } else {
+        // An admin with this email already exists (e.g. provisioned
+        // separately) — link to that school rather than leaving this lead
+        // unlinked forever.
+        const escaped = lead.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const existingSchool = await this.databaseService.repositories.SchoolModel.findOne({
+          schoolEmail: { $regex: `^${escaped}$`, $options: 'i' },
+        });
+        if (existingSchool) lead.schoolId = existingSchool._id as any;
+      }
     }
 
-    // Update lead status
     lead.status = status;
+    lead.activity.push({
+      type: 'status_change',
+      summary: provisioned
+        ? 'Moved to Trial — account provisioned and credentials emailed'
+        : `Status changed: ${previousStatus} → ${status}`,
+      authorEmail: actor?.email,
+      occurredAt: new Date(),
+    } as any);
     await lead.save();
 
+    if (actor) {
+      this.auditLogService.record('lead_status_changed', actor.userId, actor.email, 'superadmin', {
+        leadId: lead._id.toString(),
+        schoolName: lead.schoolName,
+        from: previousStatus,
+        to: status,
+      });
+    }
+
     return {
-      message: status === 'activated'
-        ? 'Lead activated — admin account created and credentials emailed'
+      message: provisioned
+        ? 'Lead moved to Trial — admin account created and credentials emailed'
         : 'Status updated',
       data: lead,
     };
+  }
+
+  async getLeadById(id: string) {
+    const lead = await this.leadModel.findById(id).lean();
+    if (!lead) throw new BadRequestException('Lead not found');
+    return { message: 'Lead fetched', data: lead };
+  }
+
+  async addLeadActivity(
+    id: string,
+    input: { type: string; summary: string },
+    actor: { email: string },
+  ) {
+    const validTypes = ['note', 'call', 'whatsapp', 'meeting'];
+    if (!validTypes.includes(input.type)) throw new BadRequestException('Invalid activity type');
+    if (!input.summary?.trim()) throw new BadRequestException('Summary is required');
+
+    const lead = await this.leadModel.findById(id);
+    if (!lead) throw new BadRequestException('Lead not found');
+
+    lead.activity.push({
+      type: input.type,
+      summary: input.summary.trim(),
+      authorEmail: actor.email,
+      occurredAt: new Date(),
+    } as any);
+    await lead.save();
+
+    return { message: 'Activity logged', data: lead };
+  }
+
+  async addLeadTask(id: string, input: { title: string; dueAt?: string }) {
+    if (!input.title?.trim()) throw new BadRequestException('Title is required');
+
+    const lead = await this.leadModel.findById(id);
+    if (!lead) throw new BadRequestException('Lead not found');
+
+    lead.tasks.push({
+      title: input.title.trim(),
+      dueAt: input.dueAt ? new Date(input.dueAt) : undefined,
+      done: false,
+      createdAt: new Date(),
+    } as any);
+    await lead.save();
+
+    return { message: 'Task added', data: lead };
+  }
+
+  async updateLeadTask(id: string, taskId: string, input: { done?: boolean; title?: string; dueAt?: string }) {
+    const lead = await this.leadModel.findById(id);
+    if (!lead) throw new BadRequestException('Lead not found');
+
+    const task = (lead.tasks as any).id(taskId);
+    if (!task) throw new BadRequestException('Task not found');
+
+    if (input.title !== undefined) task.title = input.title.trim();
+    if (input.dueAt !== undefined) task.dueAt = input.dueAt ? new Date(input.dueAt) : undefined;
+    if (input.done !== undefined) {
+      task.done = input.done;
+      task.completedAt = input.done ? new Date() : undefined;
+    }
+    await lead.save();
+
+    return { message: 'Task updated', data: lead };
+  }
+
+  getLeadEmailTemplates() {
+    return { message: 'Templates fetched', data: LEAD_EMAIL_TEMPLATES };
+  }
+
+  async sendLeadEmail(
+    id: string,
+    input: { subject: string; body: string },
+    actor: { email: string },
+  ) {
+    if (!input.subject?.trim() || !input.body?.trim()) {
+      throw new BadRequestException('Subject and body are required');
+    }
+
+    const lead = await this.leadModel.findById(id);
+    if (!lead) throw new BadRequestException('Lead not found');
+
+    const mailer = this.getMailer();
+    await mailer.sendMail({
+      from: `"SmartVan Team" <${process.env.EMAIL_USER}>`,
+      to: lead.email,
+      replyTo: actor.email,
+      subject: input.subject.trim(),
+      text: input.body,
+    });
+
+    lead.activity.push({
+      type: 'email',
+      summary: `Sent: "${input.subject.trim()}"`,
+      authorEmail: actor.email,
+      occurredAt: new Date(),
+    } as any);
+    await lead.save();
+
+    return { message: 'Email sent', data: lead };
+  }
+
+  // Called from billing.service.ts whenever a school's payment is confirmed
+  // (webhook, manual mark-paid, or the self-heal Stripe sync) — if that
+  // school was provisioned from a lead still open in the pipeline, this is
+  // the deal closing. Idempotent and silent when there's no linked lead, or
+  // it's already Won/Lost, so it's safe to call from every success path.
+  async markLeadWonIfLinked(schoolId: Types.ObjectId | string | any, note: string) {
+    const lead = await this.leadModel.findOne({
+      schoolId,
+      status: { $nin: ['won', 'lost'] },
+    });
+    if (!lead) return;
+
+    const previousStatus = lead.status;
+    lead.status = 'won';
+    lead.activity.push({
+      type: 'status_change',
+      summary: note,
+      authorEmail: 'system',
+      occurredAt: new Date(),
+    } as any);
+    await lead.save();
+
+    this.auditLogService.record('lead_status_changed', 'system', 'system', 'superadmin', {
+      leadId: lead._id.toString(),
+      schoolName: lead.schoolName,
+      from: previousStatus,
+      to: 'won',
+    });
+  }
+
+  // One-time, idempotent: renames the old 4-stage status values to the new
+  // 6-stage pipeline, and backfills schoolId for leads that already have a
+  // provisioned account (set only going forward by updateLeadStatus) by
+  // matching the school's email. Safe to run on every boot — the renames
+  // only ever match the old string values, and the backfill only touches
+  // leads still missing schoolId.
+  async migrateLegacyLeadStatuses() {
+    await this.leadModel.updateMany({ status: 'activated' }, { $set: { status: 'trial' } });
+    await this.leadModel.updateMany({ status: 'rejected' }, { $set: { status: 'lost' } });
+
+    const unlinked = await this.leadModel.find({
+      status: { $in: ['trial', 'won'] },
+      schoolId: { $exists: false },
+    });
+    for (const lead of unlinked) {
+      const escaped = lead.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const school = await this.databaseService.repositories.SchoolModel.findOne({
+        schoolEmail: { $regex: `^${escaped}$`, $options: 'i' },
+      });
+      if (school) {
+        lead.schoolId = school._id as any;
+        await lead.save();
+      }
+    }
   }
 
   /**

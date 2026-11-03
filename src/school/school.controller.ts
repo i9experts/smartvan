@@ -97,6 +97,67 @@ export class SchoolController {
     return this.schoolService.getAllLeads();
   }
 
+  // Static route — must stay registered before 'leads/:id' or Nest would
+  // match "email-templates" as an :id instead.
+  @UseGuards(AuthGuard('jwt'))
+  @Get('leads/email-templates')
+  async getLeadEmailTemplates(@Req() req: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getLeadEmailTemplates();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('leads/:id')
+  async getLead(@Req() req: any, @Param('id') id: string) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getLeadById(id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('leads/:id/activity')
+  async addLeadActivity(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: { type: string; summary: string },
+  ) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.addLeadActivity(id, body, { email: req.user.email });
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('leads/:id/tasks')
+  async addLeadTask(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: { title: string; dueAt?: string },
+  ) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.addLeadTask(id, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Patch('leads/:id/tasks/:taskId')
+  async updateLeadTask(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Param('taskId') taskId: string,
+    @Body() body: { done?: boolean; title?: string; dueAt?: string },
+  ) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.updateLeadTask(id, taskId, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('leads/:id/send-email')
+  async sendLeadEmail(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: { subject: string; body: string },
+  ) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.sendLeadEmail(id, body, { email: req.user.email });
+  }
+
   @UseGuards(AuthGuard('jwt'))
   @Post('create-institution')
   async createInstitution(
@@ -117,7 +178,7 @@ export class SchoolController {
     if (req.user.role !== 'superadmin') {
       throw new UnauthorizedException('Only superadmins can access this API');
     }
-    return this.schoolService.updateLeadStatus(id, body.status);
+    return this.schoolService.updateLeadStatus(id, body.status, { userId: req.user.userId, email: req.user.email });
   }
 
   // ─── Feature tier (Basic vs Premium) ──────────────────────────────────
