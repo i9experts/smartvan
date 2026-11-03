@@ -255,6 +255,59 @@ export class SchoolController {
     return this.schoolService.deleteCampaign(id);
   }
 
+  // ─── Partners & commissions (Sales Ops Phase 4 — superadmin only) ─────
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('partners')
+  async getPartners(@Req() req: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getAllPartners();
+  }
+
+  // Static route — must stay registered before 'partners/:id' or Nest
+  // would match "overview" as an :id instead.
+  @UseGuards(AuthGuard('jwt'))
+  @Get('partners/overview')
+  async getPartnersOverview(@Req() req: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getPartnersOverview();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('partners')
+  async createPartner(@Req() req: any, @Body() body: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.createPartner(body, { userId: req.user.userId, email: req.user.email });
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Patch('partners/:id')
+  async updatePartner(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.updatePartner(id, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Delete('partners/:id')
+  async deletePartner(@Req() req: any, @Param('id') id: string) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.deletePartner(id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('partners/:id/commissions')
+  async getPartnerCommissions(@Req() req: any, @Param('id') id: string) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getPartnerCommissions(id);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Patch('partners/commissions/:id/mark-paid')
+  async markCommissionPaid(@Req() req: any, @Param('id') id: string, @Body() body: { note?: string }) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.markCommissionPaid(id, body, { email: req.user.email });
+  }
+
   // ─── Feature tier (Basic vs Premium) ──────────────────────────────────
 
   @UseGuards(AuthGuard('jwt'))
