@@ -45,6 +45,7 @@ import { FeatureGuard } from 'src/auth/guard/feature.guard';
        { name: schema.VanSchoolLink.name, schema: schema.VanSchoolLinkSchema },
        { name: schema.AuditLog.name, schema: schema.AuditLogSchema },
        { name: schema.PretripChecklist.name, schema: schema.PretripChecklistSchema },
+       { name: schema.AppVersion.name, schema: schema.AppVersionSchema },
        { name: schema.Rating.name, schema: schema.RatingSchema },
        { name: schema.KidAbsence.name, schema: schema.KidAbsenceSchema },
     ]),
