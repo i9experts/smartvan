@@ -123,6 +123,13 @@ export class SchoolController {
   }
 
   @UseGuards(AuthGuard('jwt'))
+  @Get('leads/forecast')
+  async getSalesForecast(@Req() req: any) {
+    this.requireSalesAccess(req.user);
+    return this.schoolService.getSalesForecast();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
   @Post('leads')
   async createLead_Manual(@Req() req: any, @Body() body: any) {
     this.requireSalesAccess(req.user);

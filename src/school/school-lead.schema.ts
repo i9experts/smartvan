@@ -22,6 +22,21 @@ class LeadActivityEntry {
   occurredAt: Date;
 }
 
+// Sales Ops Phase 6 — a timestamped record of every stage this lead has
+// ever entered, pushed once per transition (see createOrMergeLead and
+// updateLeadStatus). `status`/`activity` only tell you where a lead is
+// *now*; this is what actually lets forecasting compute real time-in-stage
+// and stage-to-won conversion rates instead of guessing from a point-in-time
+// snapshot.
+@Schema({ _id: false })
+class LeadStageHistoryEntry {
+  @Prop({ required: true })
+  status: string;
+
+  @Prop({ required: true })
+  enteredAt: Date;
+}
+
 @Schema()
 class LeadTaskEntry {
   @Prop({ required: true })
@@ -176,6 +191,13 @@ export class SchoolLead {
   // actually back on it.
   @Prop()
   lastEscalatedAt?: Date;
+
+  // Sales Ops Phase 6 — forecasting & analytics. See LeadStageHistoryEntry.
+  // Leads created before this field existed are backfilled a best-effort
+  // single- or two-entry history by SchoolService.backfillStageHistory —
+  // see its comment for exactly what it can and can't reconstruct.
+  @Prop({ type: [LeadStageHistoryEntry], default: [] })
+  stageHistory: LeadStageHistoryEntry[];
 }
 
 export const SchoolLeadSchema = SchemaFactory.createForClass(SchoolLead);

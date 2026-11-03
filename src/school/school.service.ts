@@ -41,6 +41,24 @@ const STALE_THRESHOLD_DAYS: Record<string, number> = {
   trial: 5,
 };
 
+// Sales Ops Phase 6 — forecasting. The open, non-terminal stages a lead
+// passes through on its way to 'won', in order.
+const OPEN_STAGES = ['new', 'contacted', 'demo', 'trial'];
+
+// Fallback win-probability per stage, used only when a stage doesn't yet
+// have enough historical samples (see MIN_FUNNEL_SAMPLE_SIZE) to trust its
+// own computed conversion rate — rough, deliberately conservative industry
+// defaults for a self-serve B2B SaaS funnel, not tuned to SmartVan's own
+// data because there isn't enough of it yet to tune against.
+const DEFAULT_STAGE_PROBABILITY: Record<string, number> = {
+  new: 0.1,
+  contacted: 0.2,
+  demo: 0.4,
+  trial: 0.65,
+};
+
+const MIN_FUNNEL_SAMPLE_SIZE = 5;
+
 @Injectable()
 export class SchoolService implements OnModuleInit {
   constructor(
@@ -58,6 +76,9 @@ export class SchoolService implements OnModuleInit {
   async onModuleInit() {
     this.migrateLegacyLeadStatuses().catch((err) =>
       console.error('[SchoolService] legacy lead status migration failed:', err?.message || err),
+    );
+    this.backfillStageHistory().catch((err) =>
+      console.error('[SchoolService] stage-history backfill failed:', err?.message || err),
     );
   }
 
@@ -223,8 +244,10 @@ export class SchoolService implements OnModuleInit {
     const { dedupNote, initialStatus, utmSource, utmMedium, utmCampaign, referralCode, ...rest } = input;
     const campaignId = await this.resolveCampaignId(utmCampaign);
     const partnerId = await this.resolvePartnerId(referralCode);
+    const startStatus = initialStatus || 'new';
     const lead = new this.leadModel({
-      ...rest, status: initialStatus || 'new', utmSource, utmMedium, utmCampaign, campaignId, referralCode, partnerId,
+      ...rest, status: startStatus, utmSource, utmMedium, utmCampaign, campaignId, referralCode, partnerId,
+      stageHistory: [{ status: startStatus, enteredAt: new Date() }],
     });
     this.touchLeadScore(lead);
     await lead.save();
@@ -565,6 +588,13 @@ export class SchoolService implements OnModuleInit {
       lead.tasks.push({ title: followUp.title, dueAt, done: false, createdAt: new Date(), source: 'auto' } as any);
     }
 
+    // Forecasting (Phase 6) needs the real timeline of every stage this
+    // lead has passed through, not just the current value — only recorded
+    // on an actual transition, same guard as the follow-up sequence above.
+    if (status !== previousStatus) {
+      lead.stageHistory.push({ status, enteredAt: new Date() } as any);
+    }
+
     lead.lastEscalatedAt = undefined;
     this.touchLeadScore(lead);
     await lead.save();
@@ -756,6 +786,37 @@ export class SchoolService implements OnModuleInit {
         lead.schoolId = school._id as any;
         await lead.save();
       }
+    }
+  }
+
+  /**
+   * One-time, idempotent: gives every lead that predates Phase 6 a
+   * best-effort stageHistory instead of an empty array. Only ever touches
+   * leads with zero entries, so a lead that has started tracking real
+   * transitions is never re-seeded. Can't reconstruct the intermediate
+   * stages a legacy lead actually passed through — those were never
+   * recorded — so this approximates with what's known for certain: it
+   * started at 'new' on createdAt, and, if it's since won, it reached
+   * 'won' on wonAt. Forecasting's time-in-stage average only counts a
+   * stage once a lead has moved past it (see getSalesForecast), so this
+   * approximation undercounts rather than fabricates precision for
+   * intermediate stages (contacted/demo/trial) it has no record of.
+   */
+  async backfillStageHistory() {
+    const unseeded = await this.leadModel.find({
+      $or: [{ stageHistory: { $exists: false } }, { stageHistory: { $size: 0 } }],
+    });
+    for (const lead of unseeded) {
+      const history: { status: string; enteredAt: Date }[] = [
+        { status: 'new', enteredAt: (lead as any).createdAt || new Date() },
+      ];
+      if (lead.status === 'won' && lead.wonAt) {
+        history.push({ status: 'won', enteredAt: lead.wonAt });
+      } else if (lead.status !== 'new') {
+        history.push({ status: lead.status, enteredAt: (lead as any).updatedAt || new Date() });
+      }
+      lead.stageHistory = history as any;
+      await lead.save();
     }
   }
 
@@ -1651,5 +1712,132 @@ export class SchoolService implements OnModuleInit {
     );
 
     return true;
+  }
+
+  // ── Sales Ops Phase 6: forecasting & analytics ─────────────────────────
+
+  /**
+   * Everything the forecast page needs, computed in one pass over every
+   * lead's status/wonAt/stageHistory/source/createdAt. Dataset is small
+   * enough (hundreds, not millions, of leads for a B2B fleet SaaS) that
+   * doing this in-process rather than an aggregation pipeline keeps the
+   * logic readable — same call this codebase already makes for
+   * getAllCampaigns/getPartnersOverview.
+   *
+   * Deliberately reports pipeline value in deal/van counts, never currency
+   * — a real PKR/USD figure would mean either reaching into BillingService
+   * for live pricing (SchoolModule would then import BillingModule, which
+   * already imports SchoolModule — the same circular-dependency problem
+   * getAllCampaigns' comment calls out) or duplicating its price table
+   * here to drift out of sync with it. Counts are honest without either.
+   */
+  async getSalesForecast() {
+    const leads = await this.leadModel.find(
+      {},
+      { status: 1, source: 1, stageHistory: 1, wonAt: 1, createdAt: 1, vanCount: 1 },
+    ).lean();
+
+    // ── Funnel: for each open stage, how many leads currently sit there,
+    // how many have ever passed through it, what fraction of those went on
+    // to win, and how long they spend there on average (only counted once
+    // a lead has moved past the stage — a lead still sitting in it today
+    // doesn't yet have a known duration).
+    const funnel = OPEN_STAGES.map((stage) => {
+      const reached = (leads as any[]).filter((l) => (l.stageHistory || []).some((h: any) => h.status === stage));
+      const wonFromHere = reached.filter((l) => l.status === 'won');
+      const currentCount = (leads as any[]).filter((l) => l.status === stage).length;
+
+      let totalDays = 0;
+      let sampleCount = 0;
+      reached.forEach((l) => {
+        const hist = (l.stageHistory || []).slice().sort((a: any, b: any) => new Date(a.enteredAt).getTime() - new Date(b.enteredAt).getTime());
+        const idx = hist.findIndex((h: any) => h.status === stage);
+        if (idx === -1 || idx === hist.length - 1) return; // no later entry yet — still in this stage
+        const start = new Date(hist[idx].enteredAt).getTime();
+        const end = new Date(hist[idx + 1].enteredAt).getTime();
+        totalDays += (end - start) / 86400000;
+        sampleCount++;
+      });
+
+      return {
+        stage,
+        currentCount,
+        everReachedCount: reached.length,
+        wonFromHereRate: reached.length > 0 ? Math.round((wonFromHere.length / reached.length) * 1000) / 10 : null,
+        avgDaysInStage: sampleCount > 0 ? Math.round((totalDays / sampleCount) * 10) / 10 : null,
+      };
+    });
+
+    // ── Weighted pipeline: each open lead's current stage times that
+    // stage's win probability — real historical rate once there's enough
+    // sample size to trust it, the conservative default table otherwise.
+    const openLeads = (leads as any[]).filter((l) => l.status !== 'won' && l.status !== 'lost');
+    const probabilityByStage: Record<string, number> = {};
+    funnel.forEach((f) => {
+      probabilityByStage[f.stage] =
+        f.everReachedCount >= MIN_FUNNEL_SAMPLE_SIZE && f.wonFromHereRate != null
+          ? f.wonFromHereRate / 100
+          : DEFAULT_STAGE_PROBABILITY[f.stage] ?? 0.1;
+    });
+    const byStage = OPEN_STAGES.map((stage) => {
+      const openCount = openLeads.filter((l) => l.status === stage).length;
+      const probability = probabilityByStage[stage];
+      return {
+        stage,
+        openCount,
+        probabilityPercent: Math.round(probability * 1000) / 10,
+        expectedWins: Math.round(openCount * probability * 10) / 10,
+      };
+    });
+    const totalExpectedWins = Math.round(byStage.reduce((sum, b) => sum + b.expectedWins, 0) * 10) / 10;
+
+    // ── Average full sales cycle — first stageHistory entry to wonAt, for
+    // leads that actually won and have a usable history.
+    const wonLeads = (leads as any[]).filter((l) => l.status === 'won' && l.wonAt && l.stageHistory?.length);
+    let cycleDaysTotal = 0;
+    wonLeads.forEach((l) => {
+      const hist = l.stageHistory.slice().sort((a: any, b: any) => new Date(a.enteredAt).getTime() - new Date(b.enteredAt).getTime());
+      cycleDaysTotal += (new Date(l.wonAt).getTime() - new Date(hist[0].enteredAt).getTime()) / 86400000;
+    });
+    const avgDaysNewToWon = wonLeads.length > 0 ? Math.round((cycleDaysTotal / wonLeads.length) * 10) / 10 : null;
+
+    // ── Weekly trend, last 12 weeks — leads created vs. won, so a drop in
+    // either is visible before it shows up in the monthly leaderboard.
+    const trend: { weekStart: string; created: number; won: number }[] = [];
+    const now = new Date();
+    for (let i = 11; i >= 0; i--) {
+      const weekStart = new Date(now);
+      weekStart.setHours(0, 0, 0, 0);
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay() - i * 7);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 7);
+      const created = (leads as any[]).filter((l) => {
+        const c = new Date(l.createdAt);
+        return c >= weekStart && c < weekEnd;
+      }).length;
+      const won = (leads as any[]).filter((l) => l.wonAt && new Date(l.wonAt) >= weekStart && new Date(l.wonAt) < weekEnd).length;
+      trend.push({ weekStart: weekStart.toISOString().slice(0, 10), created, won });
+    }
+
+    // ── Source performance — which lead-capture channel actually converts.
+    const sources = Array.from(new Set((leads as any[]).map((l) => l.source || 'website')));
+    const sourcePerformance = sources
+      .map((source) => {
+        const total = (leads as any[]).filter((l) => l.source === source).length;
+        const won = (leads as any[]).filter((l) => l.source === source && l.status === 'won').length;
+        return { source, total, won, conversionRate: total > 0 ? Math.round((won / total) * 1000) / 10 : 0 };
+      })
+      .sort((a, b) => b.total - a.total);
+
+    return {
+      message: 'Sales forecast fetched',
+      data: {
+        funnel,
+        weightedPipeline: { totalExpectedWins, byStage },
+        avgDaysNewToWon,
+        trend,
+        sourcePerformance,
+      },
+    };
   }
 }
