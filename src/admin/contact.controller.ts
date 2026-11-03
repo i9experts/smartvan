@@ -25,6 +25,7 @@ export class ContactController {
         utmSource: body.utmSource || body.utm_source,
         utmMedium: body.utmMedium || body.utm_medium,
         utmCampaign: body.utmCampaign || body.utm_campaign,
+        referralCode: body.referralCode || body.ref || body.referral_code,
       })
       .catch((err) => console.error('[contact] lead capture failed:', err?.message || err));
 

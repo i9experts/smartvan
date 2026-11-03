@@ -11,6 +11,8 @@ import { OtpService } from 'src/user/schema/otp/otp.service';
 import { SchoolDocument } from './school.schema';
 import { SchoolLead, SchoolLeadDocument } from './school-lead.schema';
 import { Campaign, CampaignDocument } from './campaign.schema';
+import { Partner, PartnerDocument } from './partner.schema';
+import { Commission, CommissionDocument } from './commission.schema';
 import { LEAD_EMAIL_TEMPLATES } from './lead-email-templates';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
@@ -24,6 +26,8 @@ export class SchoolService implements OnModuleInit {
     private readonly jwtService: JwtService,
     @InjectModel(SchoolLead.name) private leadModel: Model<SchoolLeadDocument>,
     @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
+    @InjectModel(Partner.name) private partnerModel: Model<PartnerDocument>,
+    @InjectModel(Commission.name) private commissionModel: Model<CommissionDocument>,
     private readonly whatsappService: WhatsappService,
     private readonly auditLogService: AuditLogService,
   ) {}
@@ -96,6 +100,7 @@ export class SchoolService implements OnModuleInit {
     email: string; phone?: string; plan?: string; currency?: string; challenges?: string;
     source: string; dedupNote: string; schoolId?: Types.ObjectId; initialStatus?: string;
     utmSource?: string; utmMedium?: string; utmCampaign?: string; assignedTo?: Types.ObjectId;
+    referralCode?: string;
   }): Promise<{ lead: SchoolLeadDocument; created: boolean }> {
     const dup = await this.findOpenDuplicateLead(input.email, input.phone);
     if (dup) {
@@ -116,13 +121,21 @@ export class SchoolService implements OnModuleInit {
         dup.utmCampaign = input.utmCampaign;
         dup.campaignId = await this.resolveCampaignId(input.utmCampaign);
       }
+      // Same first-touch rule for a partner referral — whichever partner's
+      // link brought this prospect in first is the one who earns the
+      // commission if it converts, regardless of what resubmits later.
+      if (input.referralCode && !dup.referralCode) {
+        dup.referralCode = input.referralCode;
+        dup.partnerId = await this.resolvePartnerId(input.referralCode);
+      }
       await dup.save();
       return { lead: dup, created: false };
     }
-    const { dedupNote, initialStatus, utmSource, utmMedium, utmCampaign, ...rest } = input;
+    const { dedupNote, initialStatus, utmSource, utmMedium, utmCampaign, referralCode, ...rest } = input;
     const campaignId = await this.resolveCampaignId(utmCampaign);
+    const partnerId = await this.resolvePartnerId(referralCode);
     const lead = await this.leadModel.create({
-      ...rest, status: initialStatus || 'new', utmSource, utmMedium, utmCampaign, campaignId,
+      ...rest, status: initialStatus || 'new', utmSource, utmMedium, utmCampaign, campaignId, referralCode, partnerId,
     });
     return { lead, created: true };
   }
@@ -148,6 +161,7 @@ export class SchoolService implements OnModuleInit {
       utmSource: body.utmSource || body.utm_source,
       utmMedium: body.utmMedium || body.utm_medium,
       utmCampaign: body.utmCampaign || body.utm_campaign,
+      referralCode: body.referralCode || body.ref || body.referral_code,
     });
 
     // Send email notification — fire-and-forget so a slow/failed SMTP send
@@ -287,7 +301,7 @@ export class SchoolService implements OnModuleInit {
 
   async createLeadFromContactForm(input: {
     name: string; email: string; subject?: string; message: string;
-    utmSource?: string; utmMedium?: string; utmCampaign?: string;
+    utmSource?: string; utmMedium?: string; utmCampaign?: string; referralCode?: string;
   }) {
     const { lead } = await this.createOrMergeLead({
       schoolName: input.subject?.trim() || `Contact Us — ${input.name}`,
@@ -298,6 +312,7 @@ export class SchoolService implements OnModuleInit {
       utmSource: input.utmSource,
       utmMedium: input.utmMedium,
       utmCampaign: input.utmCampaign,
+      referralCode: input.referralCode,
     });
     lead.activity.push({
       type: 'note',
@@ -1144,5 +1159,259 @@ export class SchoolService implements OnModuleInit {
 
     rows.sort((a, b) => b.wonThisMonth - a.wonThisMonth);
     return { message: 'Leaderboard fetched', data: rows };
+  }
+
+  // ── Sales Ops Phase 4: partners & commissions ─────────────────────────
+
+  private slugifyReferralCode(name: string): string {
+    const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return base || 'partner';
+  }
+
+  /** Resolves a referralCode value to the partner it belongs to, if any — used by lead capture to set partnerId. */
+  private async resolvePartnerId(referralCode?: string): Promise<Types.ObjectId | undefined> {
+    if (!referralCode?.trim()) return undefined;
+    const partner = await this.partnerModel.findOne({ referralCode: referralCode.trim().toLowerCase() }, { _id: 1 });
+    return partner?._id as any;
+  }
+
+  async createPartner(body: any, actor: { userId: string; email: string }) {
+    if (!body.name?.trim()) throw new BadRequestException('Partner name is required');
+    if (!body.email?.trim()) throw new BadRequestException('Partner email is required');
+
+    let referralCode = (body.referralCode?.trim() || this.slugifyReferralCode(body.name)).toLowerCase();
+    // Auto-dedupe a generated code (two partners named "Ali Traders") rather
+    // than rejecting the whole create — only an explicitly-chosen code that
+    // collides is treated as a real conflict the caller needs to fix.
+    const explicit = !!body.referralCode?.trim();
+    if (explicit) {
+      const existing = await this.partnerModel.findOne({ referralCode });
+      if (existing) throw new BadRequestException('A partner with this referral code already exists');
+    } else {
+      let candidate = referralCode;
+      let suffix = 1;
+      while (await this.partnerModel.findOne({ referralCode: candidate })) {
+        candidate = `${referralCode}-${++suffix}`;
+      }
+      referralCode = candidate;
+    }
+
+    const rate = body.commissionRate !== undefined ? Number(body.commissionRate) : 10;
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      throw new BadRequestException('Commission rate must be a number between 0 and 100');
+    }
+
+    const partner = await this.partnerModel.create({
+      name: body.name.trim(),
+      contactName: body.contactName,
+      email: body.email.trim(),
+      phone: body.phone,
+      type: body.type || 'individual_agent',
+      referralCode,
+      commissionRate: rate,
+      status: body.status || 'active',
+      paymentDetails: body.paymentDetails,
+      notes: body.notes,
+      createdBy: new Types.ObjectId(actor.userId),
+    });
+
+    this.auditLogService.record('partner_created', actor.userId, actor.email, 'superadmin', {
+      partnerId: partner._id.toString(),
+      name: partner.name,
+      referralCode: partner.referralCode,
+    });
+
+    return { message: 'Partner added', data: partner };
+  }
+
+  async updatePartner(id: string, body: any) {
+    const partner = await this.partnerModel.findById(id);
+    if (!partner) throw new BadRequestException('Partner not found');
+
+    if (body.name !== undefined) partner.name = body.name.trim();
+    if (body.contactName !== undefined) partner.contactName = body.contactName;
+    if (body.email !== undefined) partner.email = body.email.trim();
+    if (body.phone !== undefined) partner.phone = body.phone;
+    if (body.type !== undefined) partner.type = body.type;
+    if (body.status !== undefined) partner.status = body.status;
+    if (body.paymentDetails !== undefined) partner.paymentDetails = body.paymentDetails;
+    if (body.notes !== undefined) partner.notes = body.notes;
+    if (body.commissionRate !== undefined) {
+      const rate = Number(body.commissionRate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+        throw new BadRequestException('Commission rate must be a number between 0 and 100');
+      }
+      // Only applies going forward — every past Commission row already
+      // snapshotted the rate it was accrued under (see accruePartnerCommission).
+      partner.commissionRate = rate;
+    }
+    // referralCode is intentionally not editable here — changing it after
+    // launch would silently orphan every lead already attributed under the
+    // old code, same reasoning as Campaign.utmCampaign.
+
+    await partner.save();
+    return { message: 'Partner updated', data: partner };
+  }
+
+  async deletePartner(id: string) {
+    const hasCommissions = await this.commissionModel.exists({ partnerId: id });
+    if (hasCommissions) {
+      throw new BadRequestException('This partner has commission history — set them to inactive instead of deleting');
+    }
+    const result = await this.partnerModel.deleteOne({ _id: id });
+    if (result.deletedCount === 0) throw new BadRequestException('Partner not found');
+    return { message: 'Partner deleted' };
+  }
+
+  /**
+   * Every partner with their referred-lead funnel (signups/trials/won) and
+   * running commission totals (pending/paid, grouped by currency — a
+   * partner can be owed both PKR and USD commissions if their referred
+   * schools are billed in different currencies).
+   */
+  async getAllPartners() {
+    const partners = await this.partnerModel.find().sort({ createdAt: -1 }).lean();
+
+    const withMetrics = await Promise.all(
+      (partners as any[]).map(async (p) => {
+        const [signups, trials, won, commissions] = await Promise.all([
+          this.leadModel.countDocuments({ partnerId: p._id }),
+          this.leadModel.countDocuments({ partnerId: p._id, schoolId: { $exists: true } }),
+          this.leadModel.countDocuments({ partnerId: p._id, status: 'won' }),
+          this.commissionModel.find({ partnerId: p._id }, { amount: 1, currency: 1, status: 1 }).lean(),
+        ]);
+
+        const pendingByCurrency: Record<string, number> = {};
+        const paidByCurrency: Record<string, number> = {};
+        (commissions as any[]).forEach((c) => {
+          const bucket = c.status === 'paid' ? paidByCurrency : pendingByCurrency;
+          bucket[c.currency] = (bucket[c.currency] || 0) + c.amount;
+        });
+
+        return {
+          ...p,
+          metrics: { signups, trials, won, pendingByCurrency, paidByCurrency },
+        };
+      }),
+    );
+
+    return { message: 'Partners fetched', data: withMetrics };
+  }
+
+  /** Platform-wide payout totals across every partner — what's owed, what's already paid, grouped by currency. */
+  async getPartnersOverview() {
+    const [partnerCounts, commissions] = await Promise.all([
+      this.partnerModel.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+      this.commissionModel.find({}, { amount: 1, currency: 1, status: 1 }).lean(),
+    ]);
+
+    const activePartners = (partnerCounts as any[]).find((c) => c._id === 'active')?.count || 0;
+    const pendingByCurrency: Record<string, number> = {};
+    const paidByCurrency: Record<string, number> = {};
+    (commissions as any[]).forEach((c) => {
+      const bucket = c.status === 'paid' ? paidByCurrency : pendingByCurrency;
+      bucket[c.currency] = (bucket[c.currency] || 0) + c.amount;
+    });
+
+    return {
+      message: 'Partner payout overview fetched',
+      data: {
+        totalPartners: await this.partnerModel.countDocuments(),
+        activePartners,
+        pendingByCurrency,
+        paidByCurrency,
+      },
+    };
+  }
+
+  async getPartnerCommissions(partnerId: string) {
+    const partner = await this.partnerModel.findById(partnerId).lean();
+    if (!partner) throw new BadRequestException('Partner not found');
+
+    const commissions = await this.commissionModel
+      .find({ partnerId })
+      .sort({ createdAt: -1 })
+      .populate('schoolId', 'schoolName')
+      .lean();
+
+    return { message: 'Commissions fetched', data: { partner, commissions } };
+  }
+
+  async markCommissionPaid(commissionId: string, body: { note?: string }, actor: { email: string }) {
+    const commission = await this.commissionModel.findById(commissionId);
+    if (!commission) throw new BadRequestException('Commission not found');
+    if (commission.status === 'paid') throw new BadRequestException('This commission is already marked paid');
+
+    commission.status = 'paid';
+    commission.paidAt = new Date();
+    commission.paidBy = actor.email;
+    if (body.note?.trim()) commission.note = body.note.trim();
+    await commission.save();
+
+    this.auditLogService.record('partner_commission_paid', 'superadmin', actor.email, 'superadmin', {
+      commissionId: commission._id.toString(),
+      partnerId: commission.partnerId.toString(),
+      amount: commission.amount,
+      currency: commission.currency,
+    });
+
+    return { message: 'Commission marked as paid', data: commission };
+  }
+
+  /**
+   * Accrues a commission for whichever partner referred the school that
+   * just made a real, confirmed payment — never on a status change alone,
+   * since the actual amount (vans can change, Premium can be added later)
+   * is only known once the payment itself exists. Called from
+   * BillingService at the two points a payment is actually confirmed: the
+   * Stripe webhook's invoice.payment_succeeded, and the superadmin's manual
+   * mark-paid override (see billing.service.ts). Silent no-op when the
+   * school isn't linked to a partner-referred lead, so it's safe to call
+   * unconditionally from both of those paths.
+   */
+  async accruePartnerCommission(
+    schoolId: Types.ObjectId | string | any,
+    grossAmount: number,
+    currency: string,
+    source: 'stripe_invoice' | 'manual',
+    stripeInvoiceId?: string,
+  ) {
+    if (!grossAmount || grossAmount <= 0) return;
+
+    const lead = await this.leadModel.findOne({ schoolId, partnerId: { $exists: true, $ne: null } });
+    if (!lead?.partnerId) return;
+
+    const partner = await this.partnerModel.findById(lead.partnerId);
+    if (!partner || partner.status !== 'active') return;
+
+    // Idempotent against Stripe webhook retries — the same invoice must
+    // never accrue two commission rows.
+    if (stripeInvoiceId) {
+      const already = await this.commissionModel.exists({ stripeInvoiceId });
+      if (already) return;
+    }
+
+    const rate = partner.commissionRate;
+    const amount = Math.round(grossAmount * (rate / 100) * 100) / 100;
+
+    await this.commissionModel.create({
+      partnerId: partner._id,
+      schoolId: lead.schoolId,
+      leadId: lead._id,
+      source,
+      stripeInvoiceId,
+      grossAmount,
+      rate,
+      amount,
+      currency,
+    });
+
+    this.auditLogService.record('partner_commission_accrued', 'system', 'system', 'superadmin', {
+      partnerId: partner._id.toString(),
+      schoolId: String(lead.schoolId),
+      amount,
+      currency,
+      source,
+    });
   }
 }

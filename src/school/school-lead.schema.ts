@@ -139,6 +139,16 @@ export class SchoolLead {
   // count reads this rather than updatedAt, which changes on any edit.
   @Prop()
   wonAt?: Date;
+
+  // Sales Ops Phase 4 — referral/reseller partners. Captured the same way
+  // as utmCampaign (first-touch, via Partner.referralCode) but kept as its
+  // own field: a school can arrive through a marketing campaign and a
+  // partner's referral link at once, and each pays out independently.
+  @Prop()
+  referralCode?: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'Partner' })
+  partnerId?: Types.ObjectId;
 }
 
 export const SchoolLeadSchema = SchemaFactory.createForClass(SchoolLead);

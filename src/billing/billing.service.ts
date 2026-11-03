@@ -404,6 +404,15 @@ export class BillingService {
       .markLeadWonIfLinked(school._id, 'Payment confirmed manually by superadmin — marked Won')
       .catch((err) => console.error('[billing] markLeadWonIfLinked failed:', err?.message || err));
 
+    // One commission accrual per manualPayments entry just recorded above —
+    // each is a distinct real payment (van billing and Premium can both be
+    // marked paid in the same call), so each earns its own commission row.
+    for (const payment of manualPayments) {
+      this.schoolService
+        .accruePartnerCommission(school._id, payment.amount, payment.currency, 'manual')
+        .catch((err) => console.error('[billing] accruePartnerCommission failed:', err?.message || err));
+    }
+
     return {
       message: 'Billing status updated manually',
       data: {
@@ -665,6 +674,12 @@ export class BillingService {
             this.schoolService
               .markLeadWonIfLinked(paidSchool._id, 'Invoice paid (Stripe) — marked Won')
               .catch((err) => console.error('[billing] markLeadWonIfLinked failed:', err?.message || err));
+            // Partner commission accrues off the real, confirmed invoice
+            // amount — not the "Won" transition itself — so it's correct
+            // even for a renewal invoice long after the school first signed up.
+            this.schoolService
+              .accruePartnerCommission(paidSchool._id, invoice.amount_paid / 100, invoice.currency.toUpperCase(), 'stripe_invoice', invoice.id)
+              .catch((err) => console.error('[billing] accruePartnerCommission failed:', err?.message || err));
           }
         }
         break;
