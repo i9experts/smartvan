@@ -19,6 +19,7 @@ export class WebsiteAnalyticsController {
     this.requireSuperAdmin(req);
     const parsed = Number(days);
     const rangeDays = Number.isFinite(parsed) && parsed > 0 && parsed <= 90 ? parsed : 28;
-    return this.websiteAnalyticsService.getOverview(rangeDays);
+    const data = await this.websiteAnalyticsService.getOverview(rangeDays);
+    return { message: 'Website analytics fetched', data };
   }
 }
