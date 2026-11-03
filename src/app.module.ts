@@ -36,6 +36,7 @@ import { SearchModule } from './search/search.module';
 import { RatingModule } from './rating/rating.module';
 import { AppVersionModule } from './app-version/app-version.module';
 import { ContactController } from './admin/contact.controller';
+import { WebsiteAnalyticsModule } from './website-analytics/website-analytics.module';
 
 
 
@@ -75,6 +76,7 @@ import { ContactController } from './admin/contact.controller';
     SearchModule,
     RatingModule,
     AppVersionModule,
+    WebsiteAnalyticsModule,
   ],
   controllers: [AppController, ContactController],
   providers: [AppService],
