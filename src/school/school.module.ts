@@ -8,6 +8,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { OtpModule } from 'src/user/schema/otp/otp.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { SchoolLead, SchoolLeadSchema } from './school-lead.schema';
+import { Campaign, CampaignSchema } from './campaign.schema';
 import { WhatsappModule } from 'src/whatsapp/whatsapp.module';
 import { AuditLogModule } from 'src/audit-log/audit-log.module';
 
@@ -20,6 +21,7 @@ import { AuditLogModule } from 'src/audit-log/audit-log.module';
     PassportModule,
     MongooseModule.forFeature([
       { name: SchoolLead.name, schema: SchoolLeadSchema },
+      { name: Campaign.name, schema: CampaignSchema },
     ]),
     JwtModule.registerAsync({
       imports: [ConfigModule],

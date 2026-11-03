@@ -112,6 +112,33 @@ export class SchoolLead {
 
   @Prop({ type: [LeadTaskEntry], default: [] })
   tasks: LeadTaskEntry[];
+
+  // Sales Ops Phase 3 — campaigns & team.
+  @Prop()
+  utmSource?: string;
+
+  @Prop()
+  utmMedium?: string;
+
+  @Prop()
+  utmCampaign?: string;
+
+  // Resolved from utmCampaign at creation time if it matches a known
+  // Campaign — stored directly so performance metrics don't need to
+  // string-match utmCampaign against every campaign on every read.
+  @Prop({ type: Types.ObjectId, ref: 'Campaign' })
+  campaignId?: Types.ObjectId;
+
+  // The sales rep working this lead — unset until a superadmin assigns it,
+  // or auto-set to whichever employee manually added the lead themselves.
+  @Prop({ type: Types.ObjectId, ref: 'Employee' })
+  assignedTo?: Types.ObjectId;
+
+  // Set the moment status first becomes 'won' (by updateLeadStatus or
+  // billing's markLeadWonIfLinked) — the leaderboard's "won this month"
+  // count reads this rather than updatedAt, which changes on any edit.
+  @Prop()
+  wonAt?: Date;
 }
 
 export const SchoolLeadSchema = SchemaFactory.createForClass(SchoolLead);

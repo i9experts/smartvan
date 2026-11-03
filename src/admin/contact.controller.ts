@@ -17,7 +17,15 @@ export class ContactController {
     // easy to miss — Contact Us is a real lead-capture channel, not just a
     // support form.
     this.schoolService
-      .createLeadFromContactForm({ name, email, subject, message })
+      .createLeadFromContactForm({
+        name,
+        email,
+        subject,
+        message,
+        utmSource: body.utmSource || body.utm_source,
+        utmMedium: body.utmMedium || body.utm_medium,
+        utmCampaign: body.utmCampaign || body.utm_campaign,
+      })
       .catch((err) => console.error('[contact] lead capture failed:', err?.message || err));
 
     try {
