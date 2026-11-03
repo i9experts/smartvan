@@ -17,6 +17,29 @@ import { LEAD_EMAIL_TEMPLATES } from './lead-email-templates';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
 import { FEATURE_KEYS, FEATURE_KEY_SET, effectiveFeatures, hasFeature } from './feature-keys';
+import { sendWithTimeout } from 'src/common/send-with-timeout.util';
+
+// Sales Ops Phase 5 — automation & sequences. A follow-up task the pipeline
+// auto-creates the moment a lead reaches this stage, so "what do I do next"
+// is never left to the rep's memory. Keyed by the *new* status; only fires
+// on an actual transition into it (see updateLeadStatus).
+const STAGE_FOLLOWUP_TASKS: Record<string, { title: string; dueInDays: number }> = {
+  contacted: { title: 'Schedule a demo call', dueInDays: 2 },
+  demo: { title: 'Send demo recap + trial signup link', dueInDays: 1 },
+  trial: { title: 'Check in on trial progress', dueInDays: 3 },
+};
+
+// How many days of silence (no activity logged) an open lead can go in each
+// stage before the nightly cron escalates it — a lead "new" or "contacted"
+// goes cold fast, while "demo"/"trial" naturally has more breathing room
+// (the prospect is already evaluating). Stages absent here (won/lost) are
+// never escalated.
+const STALE_THRESHOLD_DAYS: Record<string, number> = {
+  new: 3,
+  contacted: 3,
+  demo: 5,
+  trial: 5,
+};
 
 @Injectable()
 export class SchoolService implements OnModuleInit {
@@ -42,6 +65,22 @@ export class SchoolService implements OnModuleInit {
   async syncStalledSchoolsIntoPipelineCron() {
     this.syncStalledSchoolsIntoPipeline().catch((err) =>
       console.error('[SchoolService] stalled-trial sync failed:', err?.message || err),
+    );
+  }
+
+  // Runs after the stalled-schools sync above so a lead it just created
+  // isn't immediately flagged stale on the same night.
+  @Cron('30 3 * * *') // daily at 03:30
+  async staleLeadsEscalationCron() {
+    this.escalateStaleLeads().catch((err) =>
+      console.error('[SchoolService] stale-lead escalation failed:', err?.message || err),
+    );
+  }
+
+  @Cron('0 8 * * *') // daily at 08:00 — start of business day
+  async dailySalesDigestCron() {
+    this.sendDailySalesDigest().catch((err) =>
+      console.error('[SchoolService] daily sales digest failed:', err?.message || err),
     );
   }
 
@@ -89,6 +128,54 @@ export class SchoolService implements OnModuleInit {
   }
 
   /**
+   * 0-100 priority score blending four signals, so the team can work "what
+   * actually matters" instead of strictly oldest-first:
+   *  - pipeline stage (further along = closer to revenue)
+   *  - fleet size (vans, falling back to a rough students-per-van estimate)
+   *  - attribution quality (a partner referral or paid campaign is a
+   *    warmer lead than an unprompted form fill)
+   *  - engagement recency (recent activity is rewarded, silence is
+   *    penalized — this is what lets the stale-lead cron's auto-note
+   *    naturally push the score back up once it re-engages)
+   * Recomputed on every meaningful change rather than cached long-term —
+   * see the call sites in createOrMergeLead, updateLeadStatus,
+   * addLeadActivity, addLeadTask, sendLeadEmail and escalateStaleLeads.
+   */
+  private computeLeadScore(lead: SchoolLeadDocument): number {
+    if (lead.status === 'lost') return 0;
+
+    const stageWeights: Record<string, number> = { new: 5, contacted: 15, demo: 25, trial: 35, won: 40 };
+    let score = stageWeights[lead.status] ?? 5;
+
+    const vanCount = parseInt(lead.vanCount || '', 10);
+    const studentCount = parseInt(lead.studentCount || '', 10);
+    const fleetSignal = Number.isFinite(vanCount) && vanCount > 0
+      ? vanCount
+      : Number.isFinite(studentCount) && studentCount > 0
+        ? Math.round(studentCount / 50)
+        : 0;
+    score += fleetSignal >= 10 ? 25 : fleetSignal >= 5 ? 15 : fleetSignal >= 1 ? 8 : 0;
+
+    if (lead.partnerId) score += 15;
+    else if (lead.campaignId) score += 10;
+    else score += 5;
+
+    score += Math.min(lead.activity?.length || 0, 5) * 3;
+    const lastTouch = lead.activity?.length ? lead.activity[lead.activity.length - 1].occurredAt : (lead as any).createdAt;
+    const daysSinceTouch = lastTouch ? Math.floor((Date.now() - new Date(lastTouch).getTime()) / 86400000) : 999;
+    if (daysSinceTouch <= 1) score += 5;
+    else if (daysSinceTouch > 14) score -= 20;
+    else if (daysSinceTouch > 7) score -= 10;
+
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  private touchLeadScore(lead: SchoolLeadDocument) {
+    lead.score = this.computeLeadScore(lead);
+    lead.scoreUpdatedAt = new Date();
+  }
+
+  /**
    * Shared by every lead-capture source (website form, Contact Us, manual
    * add, spreadsheet import, stalled-trial sync, demand conversion) —
    * dedupes against any open lead sharing the email or phone before
@@ -128,15 +215,19 @@ export class SchoolService implements OnModuleInit {
         dup.referralCode = input.referralCode;
         dup.partnerId = await this.resolvePartnerId(input.referralCode);
       }
+      dup.lastEscalatedAt = undefined;
+      this.touchLeadScore(dup);
       await dup.save();
       return { lead: dup, created: false };
     }
     const { dedupNote, initialStatus, utmSource, utmMedium, utmCampaign, referralCode, ...rest } = input;
     const campaignId = await this.resolveCampaignId(utmCampaign);
     const partnerId = await this.resolvePartnerId(referralCode);
-    const lead = await this.leadModel.create({
+    const lead = new this.leadModel({
       ...rest, status: initialStatus || 'new', utmSource, utmMedium, utmCampaign, campaignId, referralCode, partnerId,
     });
+    this.touchLeadScore(lead);
+    await lead.save();
     return { lead, created: true };
   }
 
@@ -464,6 +555,18 @@ export class SchoolService implements OnModuleInit {
       authorEmail: actor.email,
       occurredAt: new Date(),
     } as any);
+
+    // Stage-triggered follow-up sequence — only on an actual transition
+    // into the stage, never re-fired by a no-op status write.
+    const followUp = STAGE_FOLLOWUP_TASKS[status];
+    if (followUp && status !== previousStatus) {
+      const dueAt = new Date();
+      dueAt.setDate(dueAt.getDate() + followUp.dueInDays);
+      lead.tasks.push({ title: followUp.title, dueAt, done: false, createdAt: new Date(), source: 'auto' } as any);
+    }
+
+    lead.lastEscalatedAt = undefined;
+    this.touchLeadScore(lead);
     await lead.save();
 
     this.auditLogService.record('lead_status_changed', actor.userId, actor.email, actor.role, {
@@ -507,6 +610,10 @@ export class SchoolService implements OnModuleInit {
       authorEmail: actor.email,
       occurredAt: new Date(),
     } as any);
+    // A human just touched this lead — whatever the stale-lead cron
+    // flagged earlier no longer applies.
+    lead.lastEscalatedAt = undefined;
+    this.touchLeadScore(lead);
     await lead.save();
 
     return { message: 'Activity logged', data: lead };
@@ -524,7 +631,9 @@ export class SchoolService implements OnModuleInit {
       dueAt: input.dueAt ? new Date(input.dueAt) : undefined,
       done: false,
       createdAt: new Date(),
+      source: 'manual',
     } as any);
+    lead.lastEscalatedAt = undefined;
     await lead.save();
 
     return { message: 'Task added', data: lead };
@@ -586,6 +695,8 @@ export class SchoolService implements OnModuleInit {
       authorEmail: actor.email,
       occurredAt: new Date(),
     } as any);
+    lead.lastEscalatedAt = undefined;
+    this.touchLeadScore(lead);
     await lead.save();
 
     return { message: 'Email sent', data: lead };
@@ -1413,5 +1524,132 @@ export class SchoolService implements OnModuleInit {
       currency,
       source,
     });
+  }
+
+  // ── Sales Ops Phase 5: automation & sequences ─────────────────────────
+
+  /**
+   * Nightly sweep for open leads gone quiet past their stage's threshold
+   * (see STALE_THRESHOLD_DAYS). Each one gets an audit-trail note, a
+   * due-today "auto" task (which is what actually surfaces it — the daily
+   * digest email just reports open overdue tasks, it doesn't re-derive
+   * staleness itself), and its score recomputed to reflect the silence.
+   * Re-escalating the same lead every single night is avoided for free:
+   * the note this pushes becomes the lead's new "last activity", so the
+   * threshold has to elapse again before it reads as stale a second time.
+   */
+  async escalateStaleLeads() {
+    const openLeads = await this.leadModel.find({ status: { $nin: ['won', 'lost'] } });
+    let escalated = 0;
+
+    for (const lead of openLeads) {
+      const threshold = STALE_THRESHOLD_DAYS[lead.status];
+      if (!threshold) continue;
+
+      const lastTouch = lead.activity?.length ? lead.activity[lead.activity.length - 1].occurredAt : (lead as any).createdAt;
+      if (!lastTouch) continue;
+      const daysSince = Math.floor((Date.now() - new Date(lastTouch).getTime()) / 86400000);
+      if (daysSince < threshold) continue;
+
+      lead.activity.push({
+        type: 'note',
+        summary: `Auto-escalated — no activity in ${daysSince} day(s)`,
+        authorEmail: 'system',
+        occurredAt: new Date(),
+      } as any);
+      lead.tasks.push({
+        title: `Follow up — gone quiet for ${daysSince} days`,
+        dueAt: new Date(),
+        done: false,
+        createdAt: new Date(),
+        source: 'auto',
+      } as any);
+      lead.lastEscalatedAt = new Date();
+      this.touchLeadScore(lead);
+      await lead.save();
+      escalated++;
+    }
+
+    return { message: 'Stale leads escalated', data: { escalated } };
+  }
+
+  /**
+   * One email per active sales rep (their own assigned leads) plus one for
+   * the superadmin (unassigned open leads) — each listing just the tasks
+   * that are due or overdue right now, manual and auto-generated alike.
+   * Silent for anyone with nothing due, so this never becomes noise.
+   */
+  async sendDailySalesDigest() {
+    const reps = await this.databaseService.repositories.employeeModel.find(
+      { permissions: 'manage_leads', status: 'active' },
+      { name: 1, email: 1 },
+    ).lean();
+
+    let sent = 0;
+    for (const rep of reps as any[]) {
+      const didSend = await this.sendDigestEmailFor({ assignedTo: rep._id }, rep.email, '/employee/leads');
+      if (didSend) sent++;
+    }
+
+    const didSendSuperadmin = await this.sendDigestEmailFor(
+      { assignedTo: { $exists: false } },
+      process.env.EMAIL_USER,
+      '/leads',
+    );
+    if (didSendSuperadmin) sent++;
+
+    return { message: 'Daily sales digest sent', data: { sent } };
+  }
+
+  private async sendDigestEmailFor(filter: any, toEmail: string | undefined, portalPath: string): Promise<boolean> {
+    if (!toEmail) return false;
+
+    const now = new Date();
+    const leads = await this.leadModel.find(
+      { ...filter, status: { $nin: ['won', 'lost'] } },
+      { schoolName: 1, tasks: 1 },
+    ).lean();
+    if (leads.length === 0) return false;
+
+    const dueTasks: { schoolName: string; leadId: string; title: string; dueAt: Date; auto: boolean }[] = [];
+    for (const lead of leads as any[]) {
+      for (const t of lead.tasks || []) {
+        if (!t.done && t.dueAt && new Date(t.dueAt) <= now) {
+          dueTasks.push({ schoolName: lead.schoolName, leadId: lead._id.toString(), title: t.title, dueAt: t.dueAt, auto: t.source === 'auto' });
+        }
+      }
+    }
+    if (dueTasks.length === 0) return false;
+
+    dueTasks.sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+    const portalUrl = `${process.env.FRONTEND_URL || 'https://app.smartvan.pk'}${portalPath}`;
+    const rowsHtml = dueTasks
+      .map((t) => `<tr>
+        <td style="padding:8px 0;color:#1a1a2e;font-weight:600">${t.schoolName}</td>
+        <td style="padding:8px 0;color:#1a1a2e">${t.title}${t.auto ? ' <span style="color:#F2994A;font-size:11px">(auto-flagged)</span>' : ''}</td>
+        <td style="padding:8px 0;color:#6b7280;font-size:12px;white-space:nowrap">${new Date(t.dueAt).toLocaleDateString()}</td>
+      </tr>`)
+      .join('');
+
+    const mailer = this.getMailer();
+    await sendWithTimeout(
+      mailer.sendMail({
+        from: `"SmartVan Sales" <${process.env.EMAIL_USER}>`,
+        to: toEmail,
+        subject: `Your SmartVan Sales Digest — ${dueTasks.length} task${dueTasks.length === 1 ? '' : 's'} due`,
+        html:
+          '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">' +
+          '<div style="background:#1B3B69;padding:24px;border-radius:12px 12px 0 0"><img src="https://app.smartvan.pk/favicon-192.png" alt="SmartVan" width="56" height="56" style="display:block;margin:0 auto 10px;border-radius:12px">' +
+          `<h2 style="color:white;margin:0;text-align:center">${dueTasks.length} task${dueTasks.length === 1 ? '' : 's'} due in your pipeline</h2></div>` +
+          '<div style="background:#f8f9fc;padding:24px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">' +
+          `<table style="width:100%;border-collapse:collapse;font-size:14px">${rowsHtml}</table>` +
+          `<div style="text-align:center;margin:24px 0"><a href="${portalUrl}" style="background:#FFB800;color:#1B3B69;font-weight:700;padding:12px 28px;border-radius:10px;text-decoration:none;display:inline-block">Open Pipeline</a></div>` +
+          '<p style="color:#9ca3af;font-size:12px;text-align:center">You\'re getting this because these are due or overdue today. No tasks due = no email.</p>' +
+          '</div></div>',
+      }).then(() => {}),
+      `sales digest to ${toEmail}`,
+    );
+
+    return true;
   }
 }

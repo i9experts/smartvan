@@ -38,6 +38,14 @@ class LeadTaskEntry {
 
   @Prop()
   completedAt?: Date;
+
+  // Sales Ops Phase 5 — distinguishes a rep's own task from one the
+  // stage-triggered follow-up sequence or the stale-lead escalation cron
+  // created on their behalf, so the UI can label it and the escalation
+  // cron can tell "already escalated" from "needs escalating" without
+  // re-reading summary text.
+  @Prop({ default: 'manual', enum: ['manual', 'auto'] })
+  source: string;
 }
 
 @Schema({ timestamps: true })
@@ -149,6 +157,25 @@ export class SchoolLead {
 
   @Prop({ type: Types.ObjectId, ref: 'Partner' })
   partnerId?: Types.ObjectId;
+
+  // Sales Ops Phase 5 — automation & sequences. A 0-100 score blending
+  // pipeline stage, fleet size, attribution quality and engagement
+  // recency, recomputed on every meaningful change and decayed nightly by
+  // the stale-lead cron — see SchoolService.computeLeadScore. Lets the
+  // team sort "which leads actually matter" instead of working strictly
+  // oldest-first.
+  @Prop({ default: 0 })
+  score: number;
+
+  @Prop()
+  scoreUpdatedAt?: Date;
+
+  // Set by the stale-lead escalation cron the first time a lead goes
+  // quiet past its stage's threshold — cleared the next time real human
+  // activity (not an auto-task) is logged, so it never masks a rep who's
+  // actually back on it.
+  @Prop()
+  lastEscalatedAt?: Date;
 }
 
 export const SchoolLeadSchema = SchemaFactory.createForClass(SchoolLead);
