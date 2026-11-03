@@ -4,6 +4,7 @@ import {
   Post,
   Get,
   Patch,
+  Delete,
   Body,
   UnauthorizedException,
   Req,
@@ -26,6 +27,16 @@ export class SchoolController {
     if (!user || user.role !== 'superadmin') {
       throw new UnauthorizedException('Only superadmins can access this API');
     }
+  }
+
+  // Leads are also worked by sales employees (manage_leads permission),
+  // not just superadmin — ownership of a specific lead is then enforced
+  // inside SchoolService (assertLeadAccess), not here.
+  private requireSalesAccess(user: any) {
+    if (!user) throw new UnauthorizedException('Not authenticated');
+    if (user.role === 'superadmin') return;
+    if (user.role === 'employee' && (user.permissions || []).includes('manage_leads')) return;
+    throw new UnauthorizedException('Only superadmins and sales employees can access this API');
   }
 
   /** Resolves the caller's own schoolId — admin via their School doc, school_staff directly. */
@@ -91,26 +102,31 @@ export class SchoolController {
   @UseGuards(AuthGuard('jwt'))
   @Get('leads')
   async getLeads(@Req() req: any) {
-    if (req.user.role !== 'superadmin') {
-      throw new UnauthorizedException('Only superadmins can access this API');
-    }
-    return this.schoolService.getAllLeads();
+    this.requireSalesAccess(req.user);
+    return this.schoolService.getAllLeads({ userId: req.user.userId, role: req.user.role });
   }
 
   // Static routes — must stay registered before 'leads/:id' or Nest would
-  // match "email-templates"/"import" as an :id instead.
+  // match "email-templates"/"import"/"leaderboard" as an :id instead.
   @UseGuards(AuthGuard('jwt'))
   @Get('leads/email-templates')
   async getLeadEmailTemplates(@Req() req: any) {
-    this.requireSuperadmin(req.user);
+    this.requireSalesAccess(req.user);
     return this.schoolService.getLeadEmailTemplates();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('leads/leaderboard')
+  async getLeaderboard(@Req() req: any) {
+    this.requireSalesAccess(req.user);
+    return this.schoolService.getLeaderboard();
   }
 
   @UseGuards(AuthGuard('jwt'))
   @Post('leads')
   async createLead_Manual(@Req() req: any, @Body() body: any) {
-    this.requireSuperadmin(req.user);
-    return this.schoolService.createLeadManually(body, { email: req.user.email });
+    this.requireSalesAccess(req.user);
+    return this.schoolService.createLeadManually(body, { userId: req.user.userId, email: req.user.email, role: req.user.role });
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -130,8 +146,8 @@ export class SchoolController {
   @UseGuards(AuthGuard('jwt'))
   @Get('leads/:id')
   async getLead(@Req() req: any, @Param('id') id: string) {
-    this.requireSuperadmin(req.user);
-    return this.schoolService.getLeadById(id);
+    this.requireSalesAccess(req.user);
+    return this.schoolService.getLeadById(id, { userId: req.user.userId, role: req.user.role });
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -141,8 +157,8 @@ export class SchoolController {
     @Param('id') id: string,
     @Body() body: { type: string; summary: string },
   ) {
-    this.requireSuperadmin(req.user);
-    return this.schoolService.addLeadActivity(id, body, { email: req.user.email });
+    this.requireSalesAccess(req.user);
+    return this.schoolService.addLeadActivity(id, body, { userId: req.user.userId, email: req.user.email, role: req.user.role });
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -152,8 +168,8 @@ export class SchoolController {
     @Param('id') id: string,
     @Body() body: { title: string; dueAt?: string },
   ) {
-    this.requireSuperadmin(req.user);
-    return this.schoolService.addLeadTask(id, body);
+    this.requireSalesAccess(req.user);
+    return this.schoolService.addLeadTask(id, body, { userId: req.user.userId, role: req.user.role });
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -164,8 +180,8 @@ export class SchoolController {
     @Param('taskId') taskId: string,
     @Body() body: { done?: boolean; title?: string; dueAt?: string },
   ) {
-    this.requireSuperadmin(req.user);
-    return this.schoolService.updateLeadTask(id, taskId, body);
+    this.requireSalesAccess(req.user);
+    return this.schoolService.updateLeadTask(id, taskId, body, { userId: req.user.userId, role: req.user.role });
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -175,8 +191,17 @@ export class SchoolController {
     @Param('id') id: string,
     @Body() body: { subject: string; body: string },
   ) {
+    this.requireSalesAccess(req.user);
+    return this.schoolService.sendLeadEmail(id, body, { userId: req.user.userId, email: req.user.email, role: req.user.role });
+  }
+
+  // Assignment stays a superadmin decision — reps work the leads they're
+  // given, they don't reassign their own to someone else.
+  @UseGuards(AuthGuard('jwt'))
+  @Patch('leads/:id/assign')
+  async assignLead(@Req() req: any, @Param('id') id: string, @Body() body: { employeeId: string | null }) {
     this.requireSuperadmin(req.user);
-    return this.schoolService.sendLeadEmail(id, body, { email: req.user.email });
+    return this.schoolService.assignLead(id, body.employeeId, { userId: req.user.userId, email: req.user.email });
   }
 
   @UseGuards(AuthGuard('jwt'))
@@ -196,10 +221,38 @@ export class SchoolController {
     @Param('id') id: string,
     @Body() body: { status: string },
   ) {
-    if (req.user.role !== 'superadmin') {
-      throw new UnauthorizedException('Only superadmins can access this API');
-    }
-    return this.schoolService.updateLeadStatus(id, body.status, { userId: req.user.userId, email: req.user.email });
+    this.requireSalesAccess(req.user);
+    return this.schoolService.updateLeadStatus(id, body.status, { userId: req.user.userId, email: req.user.email, role: req.user.role });
+  }
+
+  // ─── Campaigns & attribution (superadmin only — budget data) ──────────
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('campaigns')
+  async getCampaigns(@Req() req: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getAllCampaigns();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('campaigns')
+  async createCampaign(@Req() req: any, @Body() body: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.createCampaign(body, { userId: req.user.userId, email: req.user.email });
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Patch('campaigns/:id')
+  async updateCampaign(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.updateCampaign(id, body);
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Delete('campaigns/:id')
+  async deleteCampaign(@Req() req: any, @Param('id') id: string) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.deleteCampaign(id);
   }
 
   // ─── Feature tier (Basic vs Premium) ──────────────────────────────────

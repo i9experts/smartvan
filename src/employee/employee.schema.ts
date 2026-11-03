@@ -13,6 +13,7 @@ export const PERMISSION_KEYS = [
   'manage_tickets',
   'view_schools',
   'manage_schools',
+  'manage_leads',
 ] as const;
 
 @Schema({ timestamps: true })
@@ -34,6 +35,11 @@ export class Employee {
 
   @Prop({ type: Types.ObjectId, ref: 'Admin', required: true })
   createdBy: Types.ObjectId;
+
+  // Sales Ops Phase 3 — only meaningful for employees with the
+  // manage_leads permission; the leaderboard shows progress against it.
+  @Prop({ default: 0 })
+  monthlyTarget: number;
 }
 
 export const EmployeeSchema = SchemaFactory.createForClass(Employee);

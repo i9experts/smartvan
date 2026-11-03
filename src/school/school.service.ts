@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, OnModuleInit, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, OnModuleInit, UnauthorizedException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
@@ -10,6 +10,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { OtpService } from 'src/user/schema/otp/otp.service';
 import { SchoolDocument } from './school.schema';
 import { SchoolLead, SchoolLeadDocument } from './school-lead.schema';
+import { Campaign, CampaignDocument } from './campaign.schema';
 import { LEAD_EMAIL_TEMPLATES } from './lead-email-templates';
 import { WhatsappService } from 'src/whatsapp/whatsapp.service';
 import { AuditLogService } from 'src/audit-log/audit-log.service';
@@ -22,6 +23,7 @@ export class SchoolService implements OnModuleInit {
     private readonly otpService: OtpService,
     private readonly jwtService: JwtService,
     @InjectModel(SchoolLead.name) private leadModel: Model<SchoolLeadDocument>,
+    @InjectModel(Campaign.name) private campaignModel: Model<CampaignDocument>,
     private readonly whatsappService: WhatsappService,
     private readonly auditLogService: AuditLogService,
   ) {}
@@ -73,6 +75,15 @@ export class SchoolService implements OnModuleInit {
     return this.leadModel.findOne({ $or: or, status: { $nin: ['won', 'lost'] } });
   }
 
+  // A superadmin can act on any lead; a sales employee only on the ones
+  // assigned to them — an unassigned or someone-else's lead isn't theirs to
+  // touch yet, even if they know its id.
+  private assertLeadAccess(lead: SchoolLeadDocument, actor: { userId: string; role: string }) {
+    if (actor.role === 'superadmin') return;
+    if (actor.role === 'employee' && lead.assignedTo?.toString() === actor.userId) return;
+    throw new ForbiddenException('You do not have access to this lead');
+  }
+
   /**
    * Shared by every lead-capture source (website form, Contact Us, manual
    * add, spreadsheet import, stalled-trial sync, demand conversion) —
@@ -84,6 +95,7 @@ export class SchoolService implements OnModuleInit {
     vanCount?: string; studentCount?: string; adminName: string; designation?: string;
     email: string; phone?: string; plan?: string; currency?: string; challenges?: string;
     source: string; dedupNote: string; schoolId?: Types.ObjectId; initialStatus?: string;
+    utmSource?: string; utmMedium?: string; utmCampaign?: string; assignedTo?: Types.ObjectId;
   }): Promise<{ lead: SchoolLeadDocument; created: boolean }> {
     const dup = await this.findOpenDuplicateLead(input.email, input.phone);
     if (dup) {
@@ -94,11 +106,24 @@ export class SchoolService implements OnModuleInit {
         occurredAt: new Date(),
       } as any);
       if (input.schoolId && !dup.schoolId) dup.schoolId = input.schoolId;
+      if (input.assignedTo && !dup.assignedTo) dup.assignedTo = input.assignedTo;
+      // First-touch attribution — a lead that already has a campaign
+      // shouldn't be re-attributed to whatever campaign happened to send
+      // the duplicate submission.
+      if (input.utmCampaign && !dup.utmCampaign) {
+        dup.utmSource = input.utmSource;
+        dup.utmMedium = input.utmMedium;
+        dup.utmCampaign = input.utmCampaign;
+        dup.campaignId = await this.resolveCampaignId(input.utmCampaign);
+      }
       await dup.save();
       return { lead: dup, created: false };
     }
-    const { dedupNote, initialStatus, ...rest } = input;
-    const lead = await this.leadModel.create({ ...rest, status: initialStatus || 'new' });
+    const { dedupNote, initialStatus, utmSource, utmMedium, utmCampaign, ...rest } = input;
+    const campaignId = await this.resolveCampaignId(utmCampaign);
+    const lead = await this.leadModel.create({
+      ...rest, status: initialStatus || 'new', utmSource, utmMedium, utmCampaign, campaignId,
+    });
     return { lead, created: true };
   }
 
@@ -120,6 +145,9 @@ export class SchoolService implements OnModuleInit {
       challenges:   body.challenges,
       source: 'website',
       dedupNote: 'Resubmitted the smartvan.pk registration form',
+      utmSource: body.utmSource || body.utm_source,
+      utmMedium: body.utmMedium || body.utm_medium,
+      utmCampaign: body.utmCampaign || body.utm_campaign,
     });
 
     // Send email notification — fire-and-forget so a slow/failed SMTP send
@@ -257,13 +285,19 @@ export class SchoolService implements OnModuleInit {
     return { message: 'Stalled trial schools synced', data: { created } };
   }
 
-  async createLeadFromContactForm(input: { name: string; email: string; subject?: string; message: string }) {
+  async createLeadFromContactForm(input: {
+    name: string; email: string; subject?: string; message: string;
+    utmSource?: string; utmMedium?: string; utmCampaign?: string;
+  }) {
     const { lead } = await this.createOrMergeLead({
       schoolName: input.subject?.trim() || `Contact Us — ${input.name}`,
       adminName: input.name,
       email: input.email,
       source: 'contact_us',
       dedupNote: `Sent another Contact Us message: "${input.message}"`,
+      utmSource: input.utmSource,
+      utmMedium: input.utmMedium,
+      utmCampaign: input.utmCampaign,
     });
     lead.activity.push({
       type: 'note',
@@ -275,7 +309,7 @@ export class SchoolService implements OnModuleInit {
     return lead;
   }
 
-  async createLeadManually(body: any, actor: { email: string }) {
+  async createLeadManually(body: any, actor: { userId: string; email: string; role: string }) {
     if (!body.schoolName?.trim()) throw new BadRequestException('School name is required');
     if (!body.adminName?.trim()) throw new BadRequestException('Contact name is required');
     if (!body.email?.trim()) throw new BadRequestException('Email is required');
@@ -297,6 +331,8 @@ export class SchoolService implements OnModuleInit {
       challenges: body.challenges,
       source: 'manual',
       dedupNote: `Added again manually by ${actor.email}`,
+      // A rep who adds their own lead is already working it.
+      assignedTo: actor.role === 'employee' ? (new Types.ObjectId(actor.userId) as any) : undefined,
     });
     return { message: created ? 'Lead added' : 'An open lead already existed — merged into it', data: lead };
   }
@@ -356,17 +392,21 @@ export class SchoolService implements OnModuleInit {
     return { message: 'Import complete', data: { created, merged, failed } };
   }
 
-  async getAllLeads() {
-    const leads = await this.leadModel.find().sort({ createdAt: -1 }).lean();
+  // Superadmin sees every lead; a sales employee sees only the pipeline
+  // assigned to them — their own working list, not everyone else's leads.
+  async getAllLeads(actor: { userId: string; role: string }) {
+    const filter = actor.role === 'employee' ? { assignedTo: actor.userId } : {};
+    const leads = await this.leadModel.find(filter).sort({ createdAt: -1 }).lean();
     return { message: 'Leads fetched', data: leads };
   }
 
-  async updateLeadStatus(id: string, status: string, actor?: { userId: string; email: string }) {
+  async updateLeadStatus(id: string, status: string, actor: { userId: string; email: string; role: string }) {
     const valid = ['new', 'contacted', 'demo', 'trial', 'won', 'lost'];
     if (!valid.includes(status)) throw new BadRequestException('Invalid status');
 
     const lead = await this.leadModel.findById(id);
     if (!lead) throw new BadRequestException('Lead not found');
+    this.assertLeadAccess(lead, actor);
 
     const previousStatus = lead.status;
     let provisioned = false;
@@ -400,24 +440,23 @@ export class SchoolService implements OnModuleInit {
     }
 
     lead.status = status;
+    if (status === 'won' && previousStatus !== 'won') lead.wonAt = new Date();
     lead.activity.push({
       type: 'status_change',
       summary: provisioned
         ? 'Moved to Trial — account provisioned and credentials emailed'
         : `Status changed: ${previousStatus} → ${status}`,
-      authorEmail: actor?.email,
+      authorEmail: actor.email,
       occurredAt: new Date(),
     } as any);
     await lead.save();
 
-    if (actor) {
-      this.auditLogService.record('lead_status_changed', actor.userId, actor.email, 'superadmin', {
-        leadId: lead._id.toString(),
-        schoolName: lead.schoolName,
-        from: previousStatus,
-        to: status,
-      });
-    }
+    this.auditLogService.record('lead_status_changed', actor.userId, actor.email, actor.role, {
+      leadId: lead._id.toString(),
+      schoolName: lead.schoolName,
+      from: previousStatus,
+      to: status,
+    });
 
     return {
       message: provisioned
@@ -427,16 +466,17 @@ export class SchoolService implements OnModuleInit {
     };
   }
 
-  async getLeadById(id: string) {
-    const lead = await this.leadModel.findById(id).lean();
+  async getLeadById(id: string, actor: { userId: string; role: string }) {
+    const lead = await this.leadModel.findById(id);
     if (!lead) throw new BadRequestException('Lead not found');
+    this.assertLeadAccess(lead, actor);
     return { message: 'Lead fetched', data: lead };
   }
 
   async addLeadActivity(
     id: string,
     input: { type: string; summary: string },
-    actor: { email: string },
+    actor: { userId: string; email: string; role: string },
   ) {
     const validTypes = ['note', 'call', 'whatsapp', 'meeting'];
     if (!validTypes.includes(input.type)) throw new BadRequestException('Invalid activity type');
@@ -444,6 +484,7 @@ export class SchoolService implements OnModuleInit {
 
     const lead = await this.leadModel.findById(id);
     if (!lead) throw new BadRequestException('Lead not found');
+    this.assertLeadAccess(lead, actor);
 
     lead.activity.push({
       type: input.type,
@@ -456,11 +497,12 @@ export class SchoolService implements OnModuleInit {
     return { message: 'Activity logged', data: lead };
   }
 
-  async addLeadTask(id: string, input: { title: string; dueAt?: string }) {
+  async addLeadTask(id: string, input: { title: string; dueAt?: string }, actor: { userId: string; role: string }) {
     if (!input.title?.trim()) throw new BadRequestException('Title is required');
 
     const lead = await this.leadModel.findById(id);
     if (!lead) throw new BadRequestException('Lead not found');
+    this.assertLeadAccess(lead, actor);
 
     lead.tasks.push({
       title: input.title.trim(),
@@ -473,9 +515,15 @@ export class SchoolService implements OnModuleInit {
     return { message: 'Task added', data: lead };
   }
 
-  async updateLeadTask(id: string, taskId: string, input: { done?: boolean; title?: string; dueAt?: string }) {
+  async updateLeadTask(
+    id: string,
+    taskId: string,
+    input: { done?: boolean; title?: string; dueAt?: string },
+    actor: { userId: string; role: string },
+  ) {
     const lead = await this.leadModel.findById(id);
     if (!lead) throw new BadRequestException('Lead not found');
+    this.assertLeadAccess(lead, actor);
 
     const task = (lead.tasks as any).id(taskId);
     if (!task) throw new BadRequestException('Task not found');
@@ -498,7 +546,7 @@ export class SchoolService implements OnModuleInit {
   async sendLeadEmail(
     id: string,
     input: { subject: string; body: string },
-    actor: { email: string },
+    actor: { userId: string; email: string; role: string },
   ) {
     if (!input.subject?.trim() || !input.body?.trim()) {
       throw new BadRequestException('Subject and body are required');
@@ -506,6 +554,7 @@ export class SchoolService implements OnModuleInit {
 
     const lead = await this.leadModel.findById(id);
     if (!lead) throw new BadRequestException('Lead not found');
+    this.assertLeadAccess(lead, actor);
 
     const mailer = this.getMailer();
     await mailer.sendMail({
@@ -541,6 +590,7 @@ export class SchoolService implements OnModuleInit {
 
     const previousStatus = lead.status;
     lead.status = 'won';
+    lead.wonAt = new Date();
     lead.activity.push({
       type: 'status_change',
       summary: note,
@@ -933,5 +983,166 @@ export class SchoolService implements OnModuleInit {
       message: 'Apps & modules overview fetched',
       data: { totalSchools: schools.length, features: adoption },
     };
+  }
+
+  // ── Sales Ops Phase 3: Campaigns & attribution ────────────────────────
+
+  async createCampaign(body: any, actor: { userId: string; email: string }) {
+    if (!body.name?.trim()) throw new BadRequestException('Campaign name is required');
+    if (!body.utmCampaign?.trim()) throw new BadRequestException('A utm_campaign key is required — it\'s what ties leads back to this campaign');
+
+    const existing = await this.campaignModel.findOne({ utmCampaign: body.utmCampaign.trim() });
+    if (existing) throw new BadRequestException('A campaign with this utm_campaign key already exists');
+
+    const campaign = await this.campaignModel.create({
+      name: body.name.trim(),
+      channel: body.channel,
+      utmSource: body.utmSource,
+      utmMedium: body.utmMedium,
+      utmCampaign: body.utmCampaign.trim(),
+      spend: Number(body.spend) || 0,
+      currency: body.currency || 'PKR',
+      startDate: body.startDate ? new Date(body.startDate) : undefined,
+      endDate: body.endDate ? new Date(body.endDate) : undefined,
+      status: body.status || 'active',
+      createdBy: new Types.ObjectId(actor.userId),
+    });
+
+    this.auditLogService.record('campaign_created', actor.userId, actor.email, 'superadmin', {
+      campaignId: campaign._id.toString(),
+      name: campaign.name,
+    });
+
+    return { message: 'Campaign created', data: campaign };
+  }
+
+  async updateCampaign(id: string, body: any) {
+    const campaign = await this.campaignModel.findById(id);
+    if (!campaign) throw new BadRequestException('Campaign not found');
+
+    if (body.name !== undefined) campaign.name = body.name.trim();
+    if (body.channel !== undefined) campaign.channel = body.channel;
+    if (body.spend !== undefined) campaign.spend = Number(body.spend) || 0;
+    if (body.currency !== undefined) campaign.currency = body.currency;
+    if (body.startDate !== undefined) campaign.startDate = body.startDate ? new Date(body.startDate) : undefined;
+    if (body.endDate !== undefined) campaign.endDate = body.endDate ? new Date(body.endDate) : undefined;
+    if (body.status !== undefined) campaign.status = body.status;
+    // utmSource/utmMedium/utmCampaign are intentionally not editable here —
+    // changing them after launch would silently orphan every lead already
+    // attributed under the old key.
+
+    await campaign.save();
+    return { message: 'Campaign updated', data: campaign };
+  }
+
+  async deleteCampaign(id: string) {
+    const result = await this.campaignModel.deleteOne({ _id: id });
+    if (result.deletedCount === 0) throw new BadRequestException('Campaign not found');
+    // Leads already attributed keep their campaignId — deleting the campaign
+    // only stops new leads from matching it; it's not a data-loss operation.
+    return { message: 'Campaign deleted' };
+  }
+
+  /**
+   * Every campaign with its funnel against real leads: signups (total
+   * attributed), trials (reached a real account — schoolId set), won
+   * (paying), and cost per paying customer (spend / won). Revenue in real
+   * currency is deliberately left out of this v1 — that would mean this
+   * module reaching into BillingService for live Stripe/plan pricing per
+   * school, which risks a circular module dependency (BillingModule
+   * already imports SchoolModule for the reverse hookup — see
+   * markLeadWonIfLinked) for a number that's only trustworthy once there's
+   * enough real campaign data to validate it against.
+   */
+  async getAllCampaigns() {
+    const campaigns = await this.campaignModel.find().sort({ createdAt: -1 }).lean();
+
+    const withMetrics = await Promise.all(
+      (campaigns as any[]).map(async (c) => {
+        const [signups, trials, won] = await Promise.all([
+          this.leadModel.countDocuments({ campaignId: c._id }),
+          this.leadModel.countDocuments({ campaignId: c._id, schoolId: { $exists: true } }),
+          this.leadModel.countDocuments({ campaignId: c._id, status: 'won' }),
+        ]);
+        return {
+          ...c,
+          metrics: {
+            signups,
+            trials,
+            won,
+            costPerWon: won > 0 ? Math.round((c.spend / won) * 100) / 100 : null,
+          },
+        };
+      }),
+    );
+
+    return { message: 'Campaigns fetched', data: withMetrics };
+  }
+
+  /** Resolves a utm_campaign value to the campaign it belongs to, if any — used by lead capture to set campaignId. */
+  private async resolveCampaignId(utmCampaign?: string): Promise<Types.ObjectId | undefined> {
+    if (!utmCampaign?.trim()) return undefined;
+    const campaign = await this.campaignModel.findOne({ utmCampaign: utmCampaign.trim() }, { _id: 1 });
+    return campaign?._id as any;
+  }
+
+  // ── Sales Ops Phase 3: team — assignment & leaderboard ────────────────
+
+  async assignLead(id: string, employeeId: string | null, actor: { userId: string; email: string }) {
+    const lead = await this.leadModel.findById(id);
+    if (!lead) throw new BadRequestException('Lead not found');
+
+    if (employeeId) {
+      const employee = await this.databaseService.repositories.employeeModel.findById(employeeId);
+      if (!employee) throw new BadRequestException('Employee not found');
+      if (!employee.permissions.includes('manage_leads' as any)) {
+        throw new BadRequestException('That employee does not have the Sales (manage_leads) permission');
+      }
+      lead.assignedTo = employee._id as any;
+      lead.activity.push({
+        type: 'note', summary: `Assigned to ${employee.name}`, authorEmail: actor.email, occurredAt: new Date(),
+      } as any);
+    } else {
+      lead.assignedTo = undefined;
+      lead.activity.push({
+        type: 'note', summary: 'Unassigned', authorEmail: actor.email, occurredAt: new Date(),
+      } as any);
+    }
+    await lead.save();
+    return { message: 'Lead assignment updated', data: lead };
+  }
+
+  async getLeaderboard() {
+    const salesReps = await this.databaseService.repositories.employeeModel.find(
+      { permissions: 'manage_leads', status: 'active' },
+      { name: 1, email: 1, monthlyTarget: 1 },
+    ).lean();
+
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    const rows = await Promise.all(
+      (salesReps as any[]).map(async (rep) => {
+        const [wonThisMonth, totalAssigned, totalWon] = await Promise.all([
+          this.leadModel.countDocuments({ assignedTo: rep._id, status: 'won', wonAt: { $gte: startOfMonth } }),
+          this.leadModel.countDocuments({ assignedTo: rep._id, status: { $nin: ['won', 'lost'] } }),
+          this.leadModel.countDocuments({ assignedTo: rep._id, status: 'won' }),
+        ]);
+        return {
+          employeeId: rep._id,
+          name: rep.name,
+          email: rep.email,
+          target: rep.monthlyTarget || 0,
+          wonThisMonth,
+          totalAssigned,
+          totalWon,
+          progressPercent: rep.monthlyTarget > 0 ? Math.round((wonThisMonth / rep.monthlyTarget) * 100) : null,
+        };
+      }),
+    );
+
+    rows.sort((a, b) => b.wonThisMonth - a.wonThisMonth);
+    return { message: 'Leaderboard fetched', data: rows };
   }
 }

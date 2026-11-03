@@ -71,6 +71,7 @@ export class EmployeeService {
     }
     if (body.name) employee.name = body.name;
     if (body.status) employee.status = body.status;
+    if (body.monthlyTarget != null) employee.monthlyTarget = Number(body.monthlyTarget) || 0;
 
     await employee.save();
 
@@ -78,7 +79,10 @@ export class EmployeeService {
       this.auditLogService.record('employee_permissions_changed', actor.userId, actor.email, actor.role, { employeeId: employee._id.toString(), newPermissions: employee.permissions });
     }
 
-    return { message: 'Employee updated successfully', data: { id: employee._id, name: employee.name, permissions: employee.permissions, status: employee.status } };
+    return {
+      message: 'Employee updated successfully',
+      data: { id: employee._id, name: employee.name, permissions: employee.permissions, status: employee.status, monthlyTarget: employee.monthlyTarget },
+    };
   }
 
   async deleteEmployee(employeeId: string, actor?: { userId: string; email: string; role: string }) {
