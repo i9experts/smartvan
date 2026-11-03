@@ -17,5 +17,6 @@ export { SchoolStaff, SchoolStaffDocument, SchoolStaffSchema } from '../school-s
 export { VanSchoolLink, VanSchoolLinkDocument, VanSchoolLinkSchema } from '../van-school-link/van-school-link.schema';
 export { AuditLog, AuditLogDocument, AuditLogSchema } from '../audit-log/audit-log.schema';
 export { PretripChecklist, PretripChecklistDocument, PretripChecklistSchema } from '../Trip/Schema/pretrip-checklist.schema';
+export { AppVersion, AppVersionDocument, AppVersionSchema } from '../app-version/app-version.schema';
 export { Rating, RatingDocument, RatingSchema } from '../rating/rating.schema';
 export { KidAbsence, KidAbsenceDocument, KidAbsenceSchema } from '../Kid/kid-absence.schema';
