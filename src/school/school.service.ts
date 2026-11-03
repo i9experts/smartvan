@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, OnModuleInit, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -31,6 +32,13 @@ export class SchoolService implements OnModuleInit {
     );
   }
 
+  @Cron('0 3 * * *') // daily at 03:00 — quiet hours, well away from peak trip traffic
+  async syncStalledSchoolsIntoPipelineCron() {
+    this.syncStalledSchoolsIntoPipeline().catch((err) =>
+      console.error('[SchoolService] stalled-trial sync failed:', err?.message || err),
+    );
+  }
+
   // ── Email helper ──────────────────────────────────────────────
   private getMailer() {
     return nodemailer.createTransport({
@@ -45,8 +53,57 @@ export class SchoolService implements OnModuleInit {
   }
 
   // ── Lead methods ──────────────────────────────────────────────
+
+  private escapeRegExp(s: string) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Finds an open (not Won/Lost) lead matching this email or phone — the
+   * same school submitting the registration form twice, or getting
+   * captured through two different channels (the form, then Contact Us,
+   * then a CSV import someone re-ran), is one sales conversation, not
+   * three pipeline cards. Returns null when nothing matches.
+   */
+  private async findOpenDuplicateLead(email?: string, phone?: string): Promise<SchoolLeadDocument | null> {
+    const or: any[] = [];
+    if (email?.trim()) or.push({ email: { $regex: `^${this.escapeRegExp(email.trim())}$`, $options: 'i' } });
+    if (phone?.trim()) or.push({ phone: phone.trim() });
+    if (or.length === 0) return null;
+    return this.leadModel.findOne({ $or: or, status: { $nin: ['won', 'lost'] } });
+  }
+
+  /**
+   * Shared by every lead-capture source (website form, Contact Us, manual
+   * add, spreadsheet import, stalled-trial sync, demand conversion) —
+   * dedupes against any open lead sharing the email or phone before
+   * creating a new one, so the same prospect never ends up as two cards.
+   */
+  private async createOrMergeLead(input: {
+    schoolName: string; schoolType?: string; country?: string; city?: string; address?: string;
+    vanCount?: string; studentCount?: string; adminName: string; designation?: string;
+    email: string; phone?: string; plan?: string; currency?: string; challenges?: string;
+    source: string; dedupNote: string; schoolId?: Types.ObjectId; initialStatus?: string;
+  }): Promise<{ lead: SchoolLeadDocument; created: boolean }> {
+    const dup = await this.findOpenDuplicateLead(input.email, input.phone);
+    if (dup) {
+      dup.activity.push({
+        type: 'note',
+        summary: input.dedupNote,
+        authorEmail: 'system',
+        occurredAt: new Date(),
+      } as any);
+      if (input.schoolId && !dup.schoolId) dup.schoolId = input.schoolId;
+      await dup.save();
+      return { lead: dup, created: false };
+    }
+    const { dedupNote, initialStatus, ...rest } = input;
+    const lead = await this.leadModel.create({ ...rest, status: initialStatus || 'new' });
+    return { lead, created: true };
+  }
+
   async createLead(body: any) {
-    const lead = await this.leadModel.create({
+    const { lead } = await this.createOrMergeLead({
       schoolName:   body.schoolName,
       schoolType:   body.schoolType,
       country:      body.country,
@@ -61,7 +118,8 @@ export class SchoolService implements OnModuleInit {
       plan:         body.plan,
       currency:     body.currency,
       challenges:   body.challenges,
-      status:       'new',
+      source: 'website',
+      dedupNote: 'Resubmitted the smartvan.pk registration form',
     });
 
     // Send email notification — fire-and-forget so a slow/failed SMTP send
@@ -112,6 +170,190 @@ export class SchoolService implements OnModuleInit {
       message: 'Registration submitted successfully',
       leadId: lead._id,
     };
+  }
+
+  /**
+   * Parent Intelligence surfaces "unmet demand" — parents naming a school
+   * that hasn't onboarded — as pure counts, with no single admin contact of
+   * its own (it's several individual parents, not one school signup). This
+   * turns one of those into a real lead, using a specific parent's own
+   * contact details as the way in rather than inventing placeholder data.
+   */
+  async createLeadFromDemand(
+    input: { schoolName: string; contactName: string; contactEmail: string; contactPhone?: string; city?: string },
+    actor: { email: string },
+  ) {
+    const { lead, created } = await this.createOrMergeLead({
+      schoolName: input.schoolName,
+      adminName: input.contactName,
+      email: input.contactEmail,
+      phone: input.contactPhone,
+      city: input.city,
+      source: 'parent_demand',
+      dedupNote: `Parent demand converted again by ${actor.email}`,
+    });
+    if (created) {
+      lead.activity.push({
+        type: 'note',
+        summary: `Converted from parent demand — a parent named this school at registration/add-kid`,
+        authorEmail: actor.email,
+        occurredAt: new Date(),
+      } as any);
+      await lead.save();
+    }
+    return { message: created ? 'Lead created from parent demand' : 'An open lead already existed — merged into it', data: lead };
+  }
+
+  /**
+   * Schools with real vans on file but no paid subscription are the
+   * activation-funnel signal from the billing side (see getPlanBreakdown's
+   * unbilledSchoolsWithVans) — this pulls each one that isn't already
+   * tracked anywhere into the pipeline as a Trial-stage lead, so the sales
+   * team can see and work them instead of them sitting invisible until
+   * someone happens to check the billing tab. Runs on a daily @Cron below
+   * and on demand via the superadmin "Sync now" button.
+   */
+  async syncStalledSchoolsIntoPipeline() {
+    const schools = await this.databaseService.repositories.SchoolModel.find(
+      { subscriptionStatus: { $ne: 'active' } },
+      { schoolName: 1, schoolEmail: 1, contactPerson: 1, contactNumber: 1, address: 1 },
+    ).lean();
+
+    let created = 0;
+    for (const school of schools as any[]) {
+      if (!school.schoolEmail) continue;
+
+      const alreadyTracked = await this.leadModel.exists({ schoolId: school._id });
+      if (alreadyTracked) continue;
+
+      const vanCount = await this.databaseService.repositories.VanModel.countDocuments({
+        schoolId: school._id.toString(),
+      });
+      if (vanCount === 0) continue;
+
+      const { created: wasCreated, lead } = await this.createOrMergeLead({
+        schoolName: school.schoolName,
+        adminName: school.contactPerson || school.schoolName,
+        email: school.schoolEmail,
+        phone: school.contactNumber,
+        address: school.address,
+        source: 'stalled_trial',
+        initialStatus: 'trial',
+        schoolId: school._id,
+        dedupNote: `Still has ${vanCount} van(s) on file with no active subscription`,
+      });
+      if (wasCreated) {
+        lead.activity.push({
+          type: 'note',
+          summary: `Auto-added: has ${vanCount} van(s) on file but no active subscription`,
+          authorEmail: 'system',
+          occurredAt: new Date(),
+        } as any);
+        await lead.save();
+        created++;
+      }
+    }
+
+    return { message: 'Stalled trial schools synced', data: { created } };
+  }
+
+  async createLeadFromContactForm(input: { name: string; email: string; subject?: string; message: string }) {
+    const { lead } = await this.createOrMergeLead({
+      schoolName: input.subject?.trim() || `Contact Us — ${input.name}`,
+      adminName: input.name,
+      email: input.email,
+      source: 'contact_us',
+      dedupNote: `Sent another Contact Us message: "${input.message}"`,
+    });
+    lead.activity.push({
+      type: 'note',
+      summary: input.message,
+      authorEmail: 'system',
+      occurredAt: new Date(),
+    } as any);
+    await lead.save();
+    return lead;
+  }
+
+  async createLeadManually(body: any, actor: { email: string }) {
+    if (!body.schoolName?.trim()) throw new BadRequestException('School name is required');
+    if (!body.adminName?.trim()) throw new BadRequestException('Contact name is required');
+    if (!body.email?.trim()) throw new BadRequestException('Email is required');
+
+    const { lead, created } = await this.createOrMergeLead({
+      schoolName: body.schoolName.trim(),
+      schoolType: body.schoolType,
+      country: body.country,
+      city: body.city,
+      address: body.address,
+      vanCount: body.vanCount,
+      studentCount: body.studentCount,
+      adminName: body.adminName.trim(),
+      designation: body.designation,
+      email: body.email.trim(),
+      phone: body.phone,
+      plan: body.plan,
+      currency: body.currency,
+      challenges: body.challenges,
+      source: 'manual',
+      dedupNote: `Added again manually by ${actor.email}`,
+    });
+    return { message: created ? 'Lead added' : 'An open lead already existed — merged into it', data: lead };
+  }
+
+  /**
+   * Spreadsheet import — one row at a time, each going through the same
+   * dedup as every other lead source. Keeps going on a bad row rather than
+   * failing the whole batch, so one malformed row in a 200-row sheet
+   * doesn't cost the other 199.
+   */
+  async importLeads(rows: any[], actor: { email: string }) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new BadRequestException('No rows to import');
+    }
+    if (rows.length > 500) {
+      throw new BadRequestException('Import is limited to 500 rows at a time');
+    }
+
+    let created = 0;
+    let merged = 0;
+    const failed: { row: number; reason: string }[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      const schoolName = String(row.schoolName || '').trim();
+      const adminName = String(row.adminName || '').trim();
+      const email = String(row.email || '').trim();
+      if (!schoolName || !adminName || !email) {
+        failed.push({ row: i + 1, reason: 'Missing schoolName, adminName or email' });
+        continue;
+      }
+      try {
+        const { created: wasCreated } = await this.createOrMergeLead({
+          schoolName,
+          schoolType: row.schoolType,
+          country: row.country,
+          city: row.city,
+          address: row.address,
+          vanCount: row.vanCount != null ? String(row.vanCount) : undefined,
+          studentCount: row.studentCount != null ? String(row.studentCount) : undefined,
+          adminName,
+          designation: row.designation,
+          email,
+          phone: row.phone != null ? String(row.phone) : undefined,
+          plan: row.plan,
+          currency: row.currency,
+          challenges: row.challenges,
+          source: 'import',
+          dedupNote: `Re-imported from a spreadsheet by ${actor.email}`,
+        });
+        if (wasCreated) created++; else merged++;
+      } catch (e: any) {
+        failed.push({ row: i + 1, reason: e?.message || 'Unknown error' });
+      }
+    }
+
+    return { message: 'Import complete', data: { created, merged, failed } };
   }
 
   async getAllLeads() {
