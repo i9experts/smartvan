@@ -1,8 +1,10 @@
 import { Controller, Post, Body } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
+import { SchoolService } from 'src/school/school.service';
 
 @Controller('contact')
 export class ContactController {
+  constructor(private readonly schoolService: SchoolService) {}
 
   @Post('send')
   async sendContact(@Body() body: any) {
@@ -10,6 +12,13 @@ export class ContactController {
     if (!name || !email || !message) {
       return { success: false, message: 'Please fill all fields' };
     }
+
+    // Lands in the Sales Ops pipeline too, not just an inbox email that's
+    // easy to miss — Contact Us is a real lead-capture channel, not just a
+    // support form.
+    this.schoolService
+      .createLeadFromContactForm({ name, email, subject, message })
+      .catch((err) => console.error('[contact] lead capture failed:', err?.message || err));
 
     try {
       const transporter = nodemailer.createTransport({

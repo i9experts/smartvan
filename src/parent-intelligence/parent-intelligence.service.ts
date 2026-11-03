@@ -1,8 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { academicLevelForGrade } from 'src/common/academic-level';
 import { reverseGeocodeAreas } from 'src/common/reverse-geocode';
+import { SchoolService } from 'src/school/school.service';
 
 // Age buckets chosen to roughly track school stages (toddler/pre-primary,
 // primary, middle, secondary, post-16) rather than even 5-year spans — more
@@ -17,7 +18,10 @@ const AGE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
 
 @Injectable()
 export class ParentIntelligenceService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly schoolService: SchoolService,
+  ) {}
 
   async getOverview() {
     const { KidModel, parentModel } = this.databaseService.repositories;
@@ -410,5 +414,58 @@ export class ParentIntelligenceService {
       geoUpdated,
       geoRemaining,
     };
+  }
+
+  /**
+   * Turns one "unmet demand" school (a count of parents who named a school
+   * that hasn't onboarded — see getOverview's topUnmetDemandSchools) into a
+   * real Sales Ops lead. There's no single admin contact for a count, so
+   * this picks one real parent who named that school — preferring a
+   * registration-time match (User.schoolName), falling back to a kid-level
+   * prospectSchoolName — and uses their own contact details as the way in.
+   */
+  async convertDemandToLead(schoolName: string, actor: { email: string }) {
+    const { parentModel, KidModel } = this.databaseService.repositories;
+    const trimmed = schoolName.trim();
+    if (!trimmed) throw new BadRequestException('School name is required');
+    const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = { $regex: `^${escaped}$`, $options: 'i' };
+
+    let contact: { name: string; email: string; phone?: string; city?: string } | null = null;
+
+    const parent: any = await parentModel
+      .findOne(
+        { userType: 'parent', isDelete: { $ne: true }, schoolId: { $in: [null, ''] }, schoolName: re },
+        { fullname: 1, email: 1, phoneNo: 1 },
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+    if (parent?.email) {
+      contact = { name: parent.fullname || trimmed, email: parent.email, phone: parent.phoneNo };
+    }
+
+    if (!contact) {
+      const kid: any = await KidModel.findOne(
+        { isProspect: true, prospectSchoolName: re },
+        { parentId: 1, city: 1 },
+      )
+        .sort({ createdAt: -1 })
+        .lean();
+      if (kid) {
+        const kidParent: any = await parentModel.findById(kid.parentId, { fullname: 1, email: 1, phoneNo: 1 }).lean();
+        if (kidParent?.email) {
+          contact = { name: kidParent.fullname || trimmed, email: kidParent.email, phone: kidParent.phoneNo, city: kid.city };
+        }
+      }
+    }
+
+    if (!contact) {
+      throw new BadRequestException('No parent contact on file for this school name — nothing to convert');
+    }
+
+    return this.schoolService.createLeadFromDemand(
+      { schoolName: trimmed, contactName: contact.name, contactEmail: contact.email, contactPhone: contact.phone, city: contact.city },
+      actor,
+    );
   }
 }

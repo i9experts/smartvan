@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Query, Req, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Query, Body, Req, ForbiddenException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { ParentIntelligenceService } from './parent-intelligence.service';
@@ -65,5 +65,14 @@ export class ParentIntelligenceController {
   async backfill(@Req() req: any) {
     this.requireSuperAdmin(req);
     return this.parentIntelligenceService.backfillIntelligenceFields();
+  }
+
+  // Turns one "unmet demand" school (Sales Ops Phase 2) into a lead — see
+  // ParentIntelligenceService.convertDemandToLead.
+  @UseGuards(AuthGuard('jwt'))
+  @Post('convert-demand-to-lead')
+  async convertDemandToLead(@Req() req: any, @Body() body: { schoolName: string }) {
+    this.requireSuperAdmin(req);
+    return this.parentIntelligenceService.convertDemandToLead(body.schoolName, { email: req.user.email });
   }
 }

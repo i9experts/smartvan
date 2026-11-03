@@ -45,13 +45,18 @@ export class SchoolLead {
   @Prop({ required: true })
   schoolName: string;
 
-  @Prop({ required: true })
+  // Only the website registration form fills these in — optional now that
+  // leads also come from Contact Us, a manual quick-add, a spreadsheet
+  // import, stalled trial schools, and converted parent demand, none of
+  // which collect a school type/designation and some of which have no
+  // phone at all (Contact Us is name+email+message only).
+  @Prop()
   schoolType: string;
 
-  @Prop({ required: true })
+  @Prop()
   country: string;
 
-  @Prop({ required: true })
+  @Prop()
   city: string;
 
   @Prop()
@@ -66,13 +71,13 @@ export class SchoolLead {
   @Prop({ required: true })
   adminName: string;
 
-  @Prop({ required: true })
+  @Prop()
   designation: string;
 
   @Prop({ required: true })
   email: string;
 
-  @Prop({ required: true })
+  @Prop()
   phone: string;
 
   @Prop()
@@ -90,6 +95,11 @@ export class SchoolLead {
   // the six stages below from here on.
   @Prop({ default: 'new' })
   status: string; // new | contacted | demo | trial | won | lost
+
+  // Where this lead came from (Sales Ops Phase 2's lead-capture sources) —
+  // shown in the pipeline so the team can see which channel is working.
+  @Prop({ default: 'website' })
+  source: string; // website | contact_us | manual | import | stalled_trial | parent_demand
 
   // Set once a 'trial' transition provisions the real School account (or is
   // backfilled by email match for leads that already had one) — the link

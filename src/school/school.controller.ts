@@ -97,13 +97,34 @@ export class SchoolController {
     return this.schoolService.getAllLeads();
   }
 
-  // Static route — must stay registered before 'leads/:id' or Nest would
-  // match "email-templates" as an :id instead.
+  // Static routes — must stay registered before 'leads/:id' or Nest would
+  // match "email-templates"/"import" as an :id instead.
   @UseGuards(AuthGuard('jwt'))
   @Get('leads/email-templates')
   async getLeadEmailTemplates(@Req() req: any) {
     this.requireSuperadmin(req.user);
     return this.schoolService.getLeadEmailTemplates();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('leads')
+  async createLead_Manual(@Req() req: any, @Body() body: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.createLeadManually(body, { email: req.user.email });
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('leads/import')
+  async importLeads(@Req() req: any, @Body() body: { rows: any[] }) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.importLeads(body.rows, { email: req.user.email });
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('leads/sync-stalled-schools')
+  async syncStalledSchools(@Req() req: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.syncStalledSchoolsIntoPipeline();
   }
 
   @UseGuards(AuthGuard('jwt'))
