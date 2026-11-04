@@ -40,7 +40,14 @@ export class WebsiteAnalyticsService {
         // surfaces "not set up yet".
         this.initError = `Could not initialize the Google Analytics client: ${err?.message || err}`;
       }
+    } else if (!this.propertyId && credentials) {
+      this.initError = 'GA4_SERVICE_ACCOUNT_BASE64 is set, but GA4_PROPERTY_ID is missing.';
+    } else if (this.propertyId && !credentials && !this.initError) {
+      this.initError = 'GA4_PROPERTY_ID is set, but GA4_SERVICE_ACCOUNT_BASE64 is missing.';
     }
+    // If credentials is null, loadCredentials() already set the specific
+    // reason (missing var, bad base64, bad JSON, or missing fields) —
+    // nothing more to add here.
   }
 
   /**
@@ -48,17 +55,43 @@ export class WebsiteAnalyticsService {
    * containing the base64-encoded service account JSON — same pattern as
    * FIREBASE_SERVICE_ACCOUNT_BASE64 (see FirebaseAdminService), so there's
    * nothing new to learn about how credentials are managed on this project.
+   * Sets this.initError with the specific reason on failure, rather than
+   * just returning null, so a "both env vars are set" case that's still
+   * broken (truncated paste, wrong value, re-encoded-as-text corruption)
+   * tells the admin what's actually wrong instead of repeating the same
+   * generic "not set up yet" message as a genuinely-missing var would.
    */
   private loadCredentials(): { client_email: string; private_key: string } | null {
     const base64 = process.env.GA4_SERVICE_ACCOUNT_BASE64;
     if (!base64) return null;
+
+    let decoded: string;
     try {
-      const json = JSON.parse(Buffer.from(base64, 'base64').toString('utf-8'));
-      if (!json.client_email || !json.private_key) return null;
-      return { client_email: json.client_email, private_key: json.private_key };
-    } catch {
+      decoded = Buffer.from(base64, 'base64').toString('utf-8');
+    } catch (err: any) {
+      this.initError = `GA4_SERVICE_ACCOUNT_BASE64 could not be base64-decoded: ${err?.message || err}`;
       return null;
     }
+
+    let json: any;
+    try {
+      json = JSON.parse(decoded);
+    } catch {
+      this.initError =
+        'GA4_SERVICE_ACCOUNT_BASE64 decoded but is not valid JSON — the key is likely truncated or was re-encoded as text ' +
+        'instead of raw file bytes. Re-generate it by reading the service account JSON file as raw bytes and base64-encoding ' +
+        'those bytes directly (e.g. PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("path.json"))).';
+      return null;
+    }
+
+    if (!json.client_email || !json.private_key) {
+      this.initError =
+        'GA4_SERVICE_ACCOUNT_BASE64 decoded to valid JSON, but it is missing client_email or private_key — ' +
+        'this is not a service account key (double check the right file was encoded).';
+      return null;
+    }
+
+    return { client_email: json.client_email, private_key: json.private_key };
   }
 
   private isConfigured(): boolean {
