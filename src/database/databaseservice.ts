@@ -57,6 +57,8 @@ export class DatabaseService {
     private RatingModel: Model<schema.RatingDocument>,
       @InjectModel(schema.KidAbsence.name)
     private KidAbsenceModel: Model<schema.KidAbsenceDocument>,
+      @InjectModel(schema.RevenueSnapshot.name)
+    private RevenueSnapshotModel: Model<schema.RevenueSnapshotDocument>,
      ) {}
      get repositories() {
     return {
@@ -82,6 +84,7 @@ export class DatabaseService {
       ratingModel: this.RatingModel,
       appVersionModel: this.AppVersionModel,
       kidAbsenceModel: this.KidAbsenceModel,
+      revenueSnapshotModel: this.RevenueSnapshotModel,
         };
   }
 }

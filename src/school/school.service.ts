@@ -1172,6 +1172,42 @@ export class SchoolService implements OnModuleInit {
     };
   }
 
+  // Per-institution breakdown of getAppsModulesOverview()'s aggregate —
+  // which premium features (beyond their tier's own defaults) each
+  // specific school actually has turned on, for drilling into one
+  // school's adoption rather than only the platform-wide percentage.
+  // This reflects entitlement (what the school is allowed to use), not
+  // real usage — no per-feature usage-event logging exists in this
+  // codebase today, so a true "which features do staff actually open"
+  // view would need that added first.
+  async getAppsModulesByInstitution() {
+    const schools = await this.databaseService.repositories.SchoolModel.find(
+      {},
+      { schoolName: 1, featureTier: 1, enabledFeatures: 1, disabledFeatures: 1 },
+    ).lean();
+
+    const premiumKeys = FEATURE_KEYS.filter((f) => f.tier === 'premium').map((f) => f.key);
+
+    const institutions = schools.map((s: any) => {
+      const active = effectiveFeatures(s);
+      const premiumFeatureKeys = premiumKeys.filter((k) => active.has(k));
+      return {
+        schoolId: s._id.toString(),
+        schoolName: s.schoolName || 'Unnamed',
+        featureTier: s.featureTier === 'premium' ? 'premium' : 'basic',
+        premiumFeatureCount: premiumFeatureKeys.length,
+        premiumFeatureKeys,
+      };
+    });
+
+    institutions.sort((a, b) => b.premiumFeatureCount - a.premiumFeatureCount);
+
+    return {
+      message: 'Apps & modules by institution fetched',
+      data: { totalSchools: schools.length, totalPremiumFeatures: premiumKeys.length, institutions },
+    };
+  }
+
   // ── Sales Ops Phase 3: Campaigns & attribution ────────────────────────
 
   async createCampaign(body: any, actor: { userId: string; email: string }) {

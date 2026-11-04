@@ -48,6 +48,7 @@ import { FeatureGuard } from 'src/auth/guard/feature.guard';
        { name: schema.AppVersion.name, schema: schema.AppVersionSchema },
        { name: schema.Rating.name, schema: schema.RatingSchema },
        { name: schema.KidAbsence.name, schema: schema.KidAbsenceSchema },
+       { name: schema.RevenueSnapshot.name, schema: schema.RevenueSnapshotSchema },
     ]),
   ],
   exports: [MongooseModule, DatabaseService, FeatureGuard],

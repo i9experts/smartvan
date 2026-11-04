@@ -37,6 +37,8 @@ import { RatingModule } from './rating/rating.module';
 import { AppVersionModule } from './app-version/app-version.module';
 import { ContactController } from './admin/contact.controller';
 import { WebsiteAnalyticsModule } from './website-analytics/website-analytics.module';
+import { RevenueAnalyticsModule } from './revenue-analytics/revenue-analytics.module';
+import { InstitutionHealthModule } from './institution-health/institution-health.module';
 
 
 
@@ -77,6 +79,8 @@ import { WebsiteAnalyticsModule } from './website-analytics/website-analytics.mo
     RatingModule,
     AppVersionModule,
     WebsiteAnalyticsModule,
+    RevenueAnalyticsModule,
+    InstitutionHealthModule,
   ],
   controllers: [AppController, ContactController],
   providers: [AppService],

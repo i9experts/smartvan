@@ -346,6 +346,13 @@ export class SchoolController {
   }
 
   @UseGuards(AuthGuard('jwt'))
+  @Get('apps-modules-by-institution')
+  async getAppsModulesByInstitution(@Req() req: any) {
+    this.requireSuperadmin(req.user);
+    return this.schoolService.getAppsModulesByInstitution();
+  }
+
+  @UseGuards(AuthGuard('jwt'))
   @Patch(':id/feature-tier')
   async updateSchoolFeatureTier(
     @Req() req: any,
