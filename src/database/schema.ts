@@ -20,3 +20,4 @@ export { PretripChecklist, PretripChecklistDocument, PretripChecklistSchema } fr
 export { AppVersion, AppVersionDocument, AppVersionSchema } from '../app-version/app-version.schema';
 export { Rating, RatingDocument, RatingSchema } from '../rating/rating.schema';
 export { KidAbsence, KidAbsenceDocument, KidAbsenceSchema } from '../Kid/kid-absence.schema';
+export { RevenueSnapshot, RevenueSnapshotDocument, RevenueSnapshotSchema } from '../revenue-analytics/revenue-snapshot.schema';
